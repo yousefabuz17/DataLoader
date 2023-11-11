@@ -1,11 +1,13 @@
+import sys
 import re
 import json
 import inspect
+import logging
 import mimetypes
 from pathlib import Path
 from itertools import chain
 from multiprocessing import cpu_count
-from configparser import ConfigParser
+from configparser import ConfigParser, NoSectionError
 from collections import OrderedDict, namedtuple
 from typing import (Any, AnyStr, Dict, Generator, IO, ItemsView,
                     KeysView, List, NamedTuple, Optional, Tuple, Union, ValuesView)
@@ -17,8 +19,6 @@ from dataclasses import dataclass, field, fields
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache, cached_property, partial
 from reprlib import recursive_repr as _recursive_repr
-
-
 
 class DataDict(OrderedDict):
     def __init__(self, *args, **kwargs):
@@ -42,8 +42,6 @@ class DataDict(OrderedDict):
         if not self:
             return '%s()' % (self.__class__.__name__,)
         return '%s(%r)' % (self.__class__.__name__, [(i, '...') for i in self.keys()])
-    
-
 @dataclass(slots=True)
 class Extensions:
     csv: Any='csv'
@@ -80,17 +78,27 @@ EXTENSIONS = Extensions()
 METHODS = EXTENSIONS._methods
 
 class LoaderException(Exception):
-    from errors import _ERRORS
+    from errors import ERRORS
     
-    def __init__(self, *args) -> None:
-        super().__init__(self.match_error(*args))
+    def __init__(self, *args, _log_method=logging.error) -> None:
+        self._log_method = _log_method
+        self.error_message = self.match_error(*args)
+        super().__init__(self.error_message)
+        self._log_error(*args)
 
+    def __str__(self):
+        return self.error_message
+    
     def match_error(self, __obj, __code):
-        __obj = __obj if not isinstance(__obj, Path) else Path(__obj).name
-        if __code in  self._ERRORS:
-            str_code = self._ERRORS[__code]
-            return str_code.format(__obj, __code)
-        raise AttributeError(f'Check if `{__code}` is still being used.')
+        __obj = __obj if not isinstance(__obj, Path|str) else Path(__obj).name
+        if __code in  self.ERRORS:
+            str_code = self.ERRORS[__code]
+            return str_code.format(' '.join(chain([__obj])))
+        _human_error = self.ERRORS[-1].format(__code)
+        raise AttributeError(_human_error)
+    
+    def _log_error(self, *args):
+        self._log_method(self.match_error(*args))
 
 class DataLoader:
     def __init__(self, ext_path=None, ext_defaults=None, **kwargs) -> None:
@@ -186,6 +194,7 @@ class DataLoader:
         elif (not path.is_file()) \
             and (not path.is_dir()) \
             and (not path.is_absolute()):
+            
             raise LoaderException(path, 707)
         
         return path
@@ -255,8 +264,8 @@ class DataLoader:
             raise LoaderException(p_name, 530)
         
         #! Make separate class for cleaning purposes
-        # elif df.empty:
-        #     raise LoaderException(p_name, 607)
+        elif isinstance(p_method, pd.DataFrame|pd.Series) and p_method.empty:
+            LoaderException(p_name, 607, _log_method=logging.warning)
         
         return p_contents(p_name, p_method)
     
@@ -289,51 +298,122 @@ class DataLoader:
         return DataSQL
     
     @staticmethod
-    def load_config(*args, inherit=False):
-        @dataclass
-        class ConfigInfo:
-            config: Any = field(init=False, repr=False)
-            _config_path: Any = None
-            _databases: Any = None
-            
-            def __post_init__(self):
-                self._config_path = DataLoader._validate_path(Path(__file__).parent.absolute() / self._config_path)
-                self.config = self._get_config
-            
-            @cached_property
-            def _get_config(self):
-                dd = DataDict
-                config_parser = ConfigParser(strict=False)
-                config_parser.read(self._config_path)
-                _ini_keys = list(filter(lambda __key: __key!='DEFAULT', config_parser))
-                
-                def _clean_config():
-                    _has_nulls = lambda __key: any(eval(val) is None for val in \
-                                                                dict(config_parser.items(__key)).values())
-                    _config = dd({key: dd(config_parser.items(key)) for key in _ini_keys if _has_nulls(key)})
-                    
-                    if not _config:
-                        raise LoaderException(self._config_path.parts[-1], 1000)
-                    elif self._databases:
-                        try:                    
-                            for _ in self._databases:
-                                _config[_]
-                        except KeyError:
-                            if isinstance(self._databases, str):
-                                self._databases = [self._databases]
-                            _db_pat = re.compile('|'.join([re.escape(db) for db in self._databases]), re.IGNORECASE)
-                            _possible_keys = [ini_key for ini_key in _ini_keys if _db_pat.search(ini_key)]
-                            if _possible_keys:
-                                return dd({ini_key: _config.get(ini_key) for ini_key in _possible_keys})
-                            return [ini_key for ini_key in _ini_keys if not _db_pat.search(ini_key)]
-                    return _config
-                return _clean_config()
-        if inherit:
+    def load_config(*args, **kwargs):
+        if kwargs.pop('instance', False):
             return ConfigInfo
-        return ConfigInfo(*args).config
+        config_path, databases = args[0], args[1:]
+        return ConfigInfo(config_path, *databases)
+
+@dataclass
+class ConfigInfo:
+    config: Any = field(init=False, repr=False)
+    _config_ini: Any = None
+    _sections: Any = None
+    _ini_name: Any = None
+    
+    def __post_init__(self):
+        self._config_ini = self._validate_config()
+        self.config = self._get_config
+        
+    def _validate_config(self):
+        _ini = self._config_ini
+        if _ini is None:
+            raise LoaderException(_ini, 880)
+        elif _ini and _ini.lower() == 'sql':
+            return self._create_sql_config
+        return DataLoader._validate_path(_ini)
     
     @staticmethod
-    def _inherit_config():
-        return DataLoader.load_config(inherit=True)
+    def convert_value(value):
+        if str(value).lower() == 'true':
+            return True
+        elif str(value).lower() == 'false':
+            return False
+        elif str(value).lower()=='none':
+            return None
+        else:
+            return value
 
+    @cached_property
+    def _create_sql_config(self):
+        _ini_name = Path('sql_config.ini')
+        __config = ConfigParser(allow_no_value=True, dict_type=DataDict, converters={'*': self.convert_value})
+        _generic = {
+                'host': None,
+                'dbname': None,
+                'user': None,
+                'password': None
+            }
+        _other = {'database': None}
+        _mysql = {
+                **{k:v for k,v in _generic.items() if k!='user'},
+                'username': None
+                }
+        
+        _sections = {
+                    'MySQL': _mysql,
+                    'PostgreSQL': _generic, 'SQLAlchemy': _generic,
+                    'Oracle': _generic, 'IBM DB2': _generic,
+                    'Microsoft SQL Server': _generic,
+                    'Amazon Redshift': _generic,
+                    'SQLite': _other, 'MariaDB': _other
+                    }
+        
+        for section, values in _sections.items():
+            __config[section] = {key: str(value) for key, value in values.items()}
+        
+        if not _ini_name.is_file():
+            with open(_ini_name, mode='w') as sql_file:
+                __config.write(sql_file)
+                sql_file.close()
+        self._ini_name = _ini_name
+        self._sections = list(_sections.keys())
+        self._config_ini = self._ini_name.absolute()
+        return __config
+        
+    @cached_property
+    def _get_config(self):
+        logging.basicConfig(level=logging.INFO)
+        dd = DataDict
+        config_parser = ConfigParser(allow_no_value=True, dict_type=DataDict, converters={'*': self.convert_value})
+        config_parser.read(self._config_ini)
+        _ini_keys = list(filter(lambda __key: __key!='DEFAULT', config_parser))
+        __name = self._ini_name if self._ini_name else self._config_ini if not isinstance(self._config_ini, Path) \
+                                                                                        else self._config_ini.stem
+        def _clean_config():
+            _has_nulls = lambda __key, __method=any: __method(self.convert_value(val) for val in \
+                                                        dict(config_parser.items(__key)).values())
+            _config = dd({key: dd(config_parser.items(key)) for key in _ini_keys if _has_nulls(key)})
+            if not _config:
+                raise LoaderException(__name, 1000)
+            elif self._sections:
+                try:
+                    for _ in self._sections:
+                        config_parser.items(_)
+                except NoSectionError:
+                    if isinstance(self._sections, str):
+                        self._sections = [self._sections]
+                    _db_pat = re.compile('|'.join(map(re.escape, self._sections)), re.IGNORECASE)
+                    _possible_keys = list(filter(_db_pat.search, _ini_keys))
+                    if _possible_keys:
+                        good = dd({ini_key: _config.get(ini_key) for ini_key in _possible_keys if _has_nulls(ini_key, all)})
+                        bad = list(filter(lambda _bad: not _has_nulls(_bad, all), _possible_keys))
+                        if not any(good):
+                            LoaderException(f'{self._sections} -> Available sections based on arguments provided ({_possible_keys}) ', 1001)
+                        elif bad:
+                            LoaderException(', '.join(bad), 1001, _log_method=logging.warning)
+                        self._sections = list(good.keys())
+                        self._config_ini = self._config_ini.absolute()
+                        self._ini_name =  self._config_ini.name
+                        return good
+                    elif not _possible_keys:
+                        LoaderException(f'{', '.join(self._sections)}`... -> All possible sections are found below:\n{_ini_keys}', 890)
+                        sys.exit(0)
+            self._sections = _ini_keys
+            self._ini_name = __name
+            return _config
+        if self._ini_name and self._ini_name.stem=='sql_config':
+            LoaderException(self._ini_name, 7, _log_method=logging.info)
+            return self
+        return _clean_config()
 
