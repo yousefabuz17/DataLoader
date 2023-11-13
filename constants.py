@@ -23,7 +23,7 @@ _ERRORS = {
         -1: '[CODE -1: HumanError]\nCheck if error code `{}` is still being used.',
         404: '[CODE 404: FileNotFoundError]\nThe file `{}` not does not exist.',
         7: '[CODE 7: SQLConfigCreation]\nAn _empty SQL .INI configuration file has been successfully created as `{}`.\n' \
-            'Once you have made the necessary modifications, please re-run ConfigInfo using the updated SQL configuration file.\n',
+            'Once you have made the necessary modifications, please re-run ConfigManager using the updated SQL configuration file.\n',
         13: '[CODE 13: PermissionError]\nYou do not have permission to access `{}`',
         100: '[CODE 100: UnicodeDecodeError]\nThere was an encoding error when reading `{}`',
         303: '[CODE 303: ParserError]\nParsing error for file `{}`',

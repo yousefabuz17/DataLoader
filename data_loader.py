@@ -1,6 +1,5 @@
 import sys
 import re
-import json
 import inspect
 import logging
 import mimetypes
@@ -19,7 +18,7 @@ from itertools import zip_longest
 
 from dataclasses import dataclass, field, fields
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache, cached_property, partial, cache
+from functools import cached_property, partial, cache
 from reprlib import recursive_repr as _recursive_repr
 
 class DataDict(OrderedDict):
@@ -51,21 +50,19 @@ class Extensions:
     _empty: Any = field(init=False, repr=False, default='')
     _other: Any = field(init=False, repr=False, default=None)
     _methods: Any = field(init=False, repr=False, default=None)
-    _loaders: Any = field(init=False, default=None)
+    _loaders: Any = field(init=False, default_factory=lambda: open)
     _ALL: List = field(init=False, default=None)
     
     def __post_init__(self):
         dd = DataDict
         self._other = {
                     i.name: [i.default] for i in fields(self) \
-                    if i.name in ['_empty', '_ALL']
+                    if i.name.lower() in ['_empty', '_all']
                     }
         
         self._ALL = set([i.lstrip('.') for i in mimetypes.types_map.keys()] + ['xlsx'])
         
-        __any = lambda path: open(path, encoding='utf-8')
-        
-        self._methods = dd(dict(zip_longest(self._other, [__any], fillvalue=__any)))
+        self._methods = dd(dict(zip_longest(self._other, [self._loaders], fillvalue=self._loaders)))
 
 EXTENSIONS = Extensions()
 METHODS = EXTENSIONS._methods
@@ -193,8 +190,8 @@ class DataLoader:
             and (not path.is_absolute()):
             __raise(LoaderException(path, 707))
             
-        elif not path.stem.startswith('.'):
-            path = path
+        elif path.stem.startswith('.'):
+            path = None
 
         return path
 
@@ -228,7 +225,7 @@ class DataLoader:
         return self._load_data(__path, __method, __kwargs)
     
     @staticmethod
-    @lru_cache(maxsize=None)
+    @cache
     def load_file(file_path, __kwargs=None):
         dl = DataLoader
         _path = dl._validate_path(file_path)
@@ -246,7 +243,7 @@ class DataLoader:
         p_method = None
         p_contents = namedtuple('_', ['name', 'method'])
         try:
-            p_method = method(path, **__kwargs)
+            p_method = EXTENSIONS._loaders(path, **__kwargs)
         except PermissionError: raise LoaderException(p_name, 13)
         except UnicodeDecodeError: raise LoaderException(p_name, 100)
         except ParserError: raise LoaderException(p_name, 303)
@@ -262,14 +259,14 @@ class DataLoader:
             LoaderException(p_name, 607, _log_method=logging.warning)
         return p_contents(p_name, p_method)
     
-    @lru_cache(maxsize=None)
+    @cache
     def _execute_path(self):
         with ThreadPoolExecutor(max_workers=max(1, cpu_count()-2)) as executor:
             _files = executor.map(self._check_ext, self._get_files)
         return DataDict({Path(file.name).stem: file.method for file in _files})
     
     @property
-    @lru_cache(maxsize=None)
+    @cache
     def files(self):
         if self.__files is None:
             self.__files = self._execute_path()
@@ -294,11 +291,11 @@ class DataLoader:
     @staticmethod
     def config_info(**kwargs):
         if kwargs.pop('instance_only', False):
-            return ConfigInfo
-        return ConfigInfo(**kwargs)
+            return ConfigManager
+        return ConfigManager(**kwargs)
     
 @dataclass(kw_only=True)
-class ConfigInfo:
+class ConfigManager:
     config_ini: Any = None
     sections: Any = None
     config: Any = field(init=False, repr=False)
@@ -454,18 +451,18 @@ class ConfigInfo:
 
 dl = DataLoader
 ci = dl.config_info
-cii = ConfigInfo
+cii = ConfigManager
 
 
 nltk = dl(f'{Path.home()}/nltk_data/corpora/stopwords', all_=True)
 test1 = dl('/Users/yousefabuzahrieh/Desktop/test')
 test2 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv', 'xls', 'xlsx'])
 test3 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv', 'pdf'])
-# print(nltk, test1, test2, test3, sep='\n\n\n')
-# print(test1.allahs_names)
-# print(test1.Book1)
-# print(cii(config_ini='db_config.ini'))
-# print(cii(config_ini='db_config.ini', sections=['mysql', 'postgresql']))
+print(nltk, test1, test2, test3, sep='\n\n\n')
+print(test1.allahs_names)
+print(test1.Book1)
+print(cii(config_ini='db_config.ini'))
+print(cii(config_ini='db_config.ini', sections=['mysql', 'postgresql']))
 # text, key = cii(config_ini='db_config.ini', _encrypt=True).config.PostgreSQL.password
 # # print(text)
 a = dl.config_info(instance_only=True)
