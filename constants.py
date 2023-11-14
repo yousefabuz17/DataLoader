@@ -21,8 +21,8 @@ _PASS = [
 
 _ERRORS = {
         -1: '[CODE -1: HumanError]\nCheck if error code `{}` is still being used.',
-        404: '[CODE 404: FileNotFoundError]\nThe file `{}` not does not exist.',
-        7: '[CODE 7: SQLConfigCreation]\nAn _empty SQL .INI configuration file has been successfully created as `{}`.\n' \
+        404: '[CODE 404: FileNotFoundError]\nThe file `{}` does not exist.',
+        7: '[CODE 7: SQLConfigCreation]\nAn empty SQL .INI configuration file has been successfully created as `{}`.\n' \
             'Once you have made the necessary modifications, please re-run ConfigManager using the updated SQL configuration file.\n',
         13: '[CODE 13: PermissionError]\nYou do not have permission to access `{}`',
         100: '[CODE 100: UnicodeDecodeError]\nThere was an encoding error when reading `{}`',
@@ -41,7 +41,8 @@ _ERRORS = {
         890: '[CODE 890: ConfigSourcesError]\nNo sections were found for {}',
         1000: '[CODE 1000: ConfigFileError]\n`{}` is currently _empty and only contains null values.\n' \
             'Please verify the contents of your configuration file.',
-        1001: '[CODE 1001: ConfigValueError]\n`{}` was found but is currently _empty and/or contains null values.\n' \
+        1001: '[CODE 1001: ConfigSectionError]\n`{}`-> Spelling errors detected. Possible Sections based on arguments provided are as follows\n({})',
+        1002: '[CODE 1001: ConfigBadSectionError]\n`{}`... was found but is currently _empty and/or contains null values.\n' \
             'Please verify the contents of your configuration file before proceeding.',
         
         }
