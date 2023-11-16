@@ -21,18 +21,20 @@ _PASS = [
 
 _ERRORS = {
         -1: '[CODE -1: HumanError]\nCheck if error code `{}` is still being used.',
+        0: '[CODE 0: EmptyDataLoaderError]\nNo files were detected. Please initialize a DataLoader instance with validated file paths to proceed.',
         404: '[CODE 404: FileNotFoundError]\nThe file `{}` does not exist.',
         7: '[CODE 7: SQLConfigCreation]\nAn empty SQL .INI configuration file has been successfully created as `{}`.\n' \
             'Once you have made the necessary modifications, please re-run ConfigManager using the updated SQL configuration file.\n',
         13: '[CODE 13: PermissionError]\nYou do not have permission to access `{}`',
         100: '[CODE 100: UnicodeDecodeError]\nThere was an encoding error when reading `{}`',
+        102: '[CODE 102: JSONDecodeError]\nFailed to decode JSON: `{}`. Position: {}. Line: {}. Column: {}.',
         303: '[CODE 303: ParserError]\nParsing error for file `{}`',
         400: '[CODE 400: DtypeWarning]\nThere are data type warnings for `{}`.\n' \
                                             'Consider specifying data types with the dtype parameter',
         500: '[CODE 500: Exception]\nAn unexpected error occured: `{}`',
         530: '[CODE 530: NoMethodFoundError]\nNo loading method found for `{}`',
-        607: '[CODE 702: ExtensionTypeError]\nCheck `{}` extensions and make sure its relative to extension loading method',
-        607: '[CODE 702: EmptyDataError]\n`{}` is an empty dataset',
+        702: '[CODE 702: ExtensionTypeError]\nCheck `{}` extensions and make sure its relative to extension loading method',
+        607: '[CODE 607: EmptyDataError]\n`{}` is an empty dataset. No columns to parse.',
         707: '[CODE 707: PathTypeError]\n`{}` is not valid. Must be an existing file, directory, or an absolute path.',
         800: '[CODE 800: AttributeError]\nThe provided argument is not valid `{}`',
         810: '[CODE 810: ConfigAttributeError]\nCannot specify both `ext_defaults` and `all_` attributes.',
@@ -42,7 +44,7 @@ _ERRORS = {
         1000: '[CODE 1000: ConfigFileError]\n`{}` is currently empty and only contains null values.\n' \
             'Please verify the contents of your configuration file.',
         1001: '[CODE 1001: ConfigSectionError]\n`{}`-> Spelling errors detected. Possible Sections based on arguments provided are as follows\n({})',
-        1002: '[CODE 1001: ConfigBadSectionError]\n`{}`... was found but is currently empty and/or contains null values.\n' \
+        1002: '[CODE 1002: ConfigBadSectionError]\n`{}`... was found but is currently empty and/or contains null values.\n' \
             'Please verify the contents of your configuration file before proceeding.',
         
         }
