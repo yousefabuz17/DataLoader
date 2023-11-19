@@ -2,7 +2,7 @@ import logging
 import re
 from os import cpu_count
 from collections import OrderedDict, namedtuple
-from configparser import ConfigParser, NoSectionError
+from configparser import ConfigParser, NoSectionError, MissingSectionHeaderError
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property, partial, cache
 from itertools import filterfalse
@@ -10,11 +10,8 @@ from pathlib import Path
 from typing import (Any, AnyStr, Dict, Generator, IO, ItemsView, Iterable,
                     KeysView, List, NamedTuple, Optional, Tuple, Union, ValuesView)
 from constants import _PASS, _ERRORS
-from pandas.errors import ParserError, DtypeWarning, EmptyDataError
-from cryptography.fernet import Fernet
 from dataclasses import dataclass, field, fields
 from reprlib import recursive_repr as _recursive_repr
-from json.decoder import JSONDecodeError
 
 
 logging.basicConfig(level=logging.INFO)
@@ -22,19 +19,22 @@ logging.basicConfig(level=logging.INFO)
 rm_p = lambda __i: __i.lstrip('.').lower()
 _s = lambda __i: '{}'.format('s' if len(__i)>1 else '')
 compiler = lambda __defaults, __k: \
-                re.compile('|'.join(map(re.escape, __defaults)), re.IGNORECASE).search(__k if isinstance(__k, str) \
-                                                                                        else '|'.join(map(re.escape, __k)))
+            re.compile('|'.join(map(re.escape, __defaults)), re.IGNORECASE).search(__k if isinstance(__k, str) \
+                                                                                    else '|'.join(map(re.escape, __k)))
 
-ExtInfo = lambda __typename='ExtInfo', \
-                __field_names=['suffix_', 'loader_'], \
-                __defaults=(None,)*2: namedtuple(__typename, __field_names, defaults=__defaults)
+ExtInfo = lambda typename='ExtInfo', \
+                field_names=('suffix_', 'loader_'), \
+                defaults=(None,)*2, \
+                **kwargs: namedtuple(typename,
+                                    field_names,
+                                    defaults=defaults,
+                                    **kwargs)
 
-__max_workers = min(cpu_count() * 2, 32)
 dl_executor = ThreadPoolExecutor(
-                                thread_name_prefix='DLThread',
-                                max_workers=__max_workers,
-                                initializer=lambda *_: print(f'{__max_workers} DataLoader(DL) Threads in progress...'),
+                                thread_name_prefix='DataLoader(DL)',
+                                max_workers=min(cpu_count() * 2, 32)
                                 )
+_dl_initializer = lambda *_: print(f'DataLoader(DL) Initialized {dl_executor._max_workers} worker DL threads...\n')
 
 class DynamicDict(OrderedDict):
     def __init__(self, *args, **kwargs):
@@ -54,6 +54,8 @@ class DynamicDict(OrderedDict):
     @_recursive_repr()
     def __repr__(self):
         __cls = self.__class__.__name__
+        if not self:
+            return f'{__cls}([])'
         return '{}([{}])'.format(
                         __cls,
                         f',\n{' ':>{len(__cls)+2}}'.join(
@@ -64,7 +66,7 @@ class DynamicDict(OrderedDict):
     __str__ = __repr__
     
     @staticmethod
-    def _too_large(value, max_length=50):
+    def _too_large(value, max_length=100):
         ellipsis = '...'
         try:
             length = len(value)
@@ -98,34 +100,38 @@ class CConfigParser(ConfigParser):
         value = super().get(section, option, raw=raw, vars=vars, fallback=fallback)
         return self.convert_value(value)
 
-    @staticmethod
-    def convert_value(value):
+    @classmethod
+    def convert_value(cls, value):
         _value = str(value).lower()
         _vals = {'true': True, 'false': False, 'none': None}
         return _vals.get(_value, value)
     
-    @staticmethod
-    def encrypt_text(text, ini_name='config', __export=False):
-        Encrypter = namedtuple('Encrypter', ['text', 'key'])
+    @classmethod
+    def encrypt_text(cls, text, ini_name='config', export=False):
+        global Fernet
+        from cryptography.fernet import Fernet
+        
+        Encrypter = ExtInfo('Encrypter', ['text', 'key'])
         key = Fernet.generate_key()
         cipher_suite = Fernet(key)
         encrypted_bytes = cipher_suite.encrypt(text.encode())
         encrypted_text = encrypted_bytes.hex()
         encrypted_data = Encrypter(encrypted_text, key)
-        if __export:
-            return CConfigParser._exporter(text, encrypted_data, ini_name)
+        if export:
+            cls._exporter(text, encrypted_data, ini_name)
+            return encrypted_data
         
         return encrypted_data
 
-    @staticmethod
-    def decrypt_text(encrypted_text, key):
+    @classmethod
+    def decrypt_text(cls, encrypted_text, key):
         cipher_suite = Fernet(key)
         encrypted_bytes = bytes.fromhex(encrypted_text)
         decrypted_message = cipher_suite.decrypt(encrypted_bytes).decode()
         return decrypted_message
     
-    @staticmethod
-    def _exporter(org_text, encrypted, /, ini_name='config', *, refresh=False, __path=None):
+    @classmethod
+    def _exporter(cls, org_text, encrypted, /, ini_name='config', *, refresh=False, __path=None):
         _config_parser = _new_config()
         _items = {'ENCRYPTED_DATA': 
                 dict(zip(('ORIGINAL_TEXT', 'ENCRYPTED_TEXT', 'DECRYPTER_KEY'),
@@ -133,14 +139,14 @@ class CConfigParser(ConfigParser):
                 }
         
         _config_parser.update(**_items)
-        _path = Path(f'encrypted_{ini_name}.ini') if not __path else DataLoader._validate_path(__path, True)
+        _path = Path(f'encrypted_{ini_name}.ini') if not __path else DataLoader._validate_path(__path)
         if not _path.is_file() or refresh:
             with open(_path, mode='w') as c_file:
                 _config_parser.write(c_file)
             LoaderException(0, message=f'`{_path}` has been successfully created.', _log_method=logging.info)
         return _config_parser
 
-class LoaderException(Exception):
+class LoaderException(BaseException):
     def __init__(self, *args, message=None, _log_method=logging.error) -> None:
         self.__message = message
         self._log_method = _log_method
@@ -161,18 +167,18 @@ class LoaderException(Exception):
         
         if __code in _ERRORS:
             str_code = _ERRORS[__code]
-            holders = (Path(obj).name if isinstance(obj, Path|str) \
+            holders = [Path(obj).name if isinstance(obj, Path|str) \
                         else ' '.join(obj) if isinstance(obj, Iterable) \
-                        else obj for obj in __obj)
+                        else obj for obj in __obj]
             return str_code.format(*holders)
     
     def _log_error(self, *args):
         self._log_method(f' {self.match_error(*args)}')
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class Extensions:
     
-    _defaults: Any = field(init=False, default=None)
+    _defaults: Any = field(init=False, default_factory=lambda: Extensions.__defaults__)
     _ALL: List = field(init=False, default=None)
     
     def __post_init__(self):
@@ -194,19 +200,18 @@ class Extensions:
         import pandas as pd
         from pdfminer.high_level import extract_pages
         return {
-                'csv': ExtInfo()('csv', pd.read_csv),
-                'hdf': ExtInfo()('hdf', pd.read_hdf),
-                'json': ExtInfo()('json', lambda path, **kwargs: json.load(open(path, **kwargs))),
-                'pdf': ExtInfo()('pdf', extract_pages),
-                'sql': ExtInfo()('sql', pd.read_sql),
-                'txt': ExtInfo()('txt', open),
-                'xml': ExtInfo()('xml', pd.read_xml),
-                'empty': ExtInfo()('', lambda path, **kwargs: open(path, **kwargs).read().splitlines())
+                'csv': ExtInfo(module='Extensions')('csv', pd.read_csv),
+                'hdf': ExtInfo(module='Extensions')('hdf', pd.read_hdf),
+                'pdf': ExtInfo(module='Extensions')('pdf', extract_pages),
+                'sql': ExtInfo(module='Extensions')('sql', pd.read_sql),
+                'xml': ExtInfo(module='Extensions')('xml', pd.read_xml),
+                'json': ExtInfo(module='Extensions')('json', lambda path, **kwargs: json.load(open(path, **kwargs), **kwargs)),
+                'txt': ExtInfo(module='Extensions')('txt', lambda path, **kwargs: open(path, **kwargs).read()),
+                'empty': ExtInfo(module='Extensions')('', lambda path, **kwargs: open(path, **kwargs).read().splitlines())
                 }
-    
-    @_recursive_repr
+
     def __repr__(self):
-        return DynamicDict.__repr__(self.__defaults__)
+        return f'{self.__class__.__name__}([{', '.join(f'{i.name}={list(getattr(self, i.name))}' for i in fields(self))}])'
     
     __str__ = __repr__
 
@@ -219,6 +224,9 @@ _new_config = lambda: CConfigParser(allow_no_value=True,
                                     )
 
 class DataLoader:
+    __DEFAULTS = EXTENSIONS._defaults
+    __ALL = EXTENSIONS._ALL
+    
     def __init__(self, ext_path=None, ext_defaults=None, all_=False, **kwargs) -> None:
         self.ext_path = ext_path
         self.ext_defaults = ext_defaults
@@ -237,7 +245,7 @@ class DataLoader:
         return 0 if self.files is None else len(self.files)
     
     def __iter__(self):
-        assert len(self.files), LoaderException(0, '')
+        assert len(self.files), LoaderException(0)
         return iter(self.files)
     
     def __next__(self):
@@ -247,24 +255,23 @@ class DataLoader:
         return file_name
     
     def __bool__(self):
-        assert len(self.files), LoaderException(0, '')
+        assert len(self.files), LoaderException(0)
         return True if len(self.files)>=1 else False
-
-    @_recursive_repr()
+    
     def __repr__(self):
         return DynamicDict.__repr__(self.files)
     
     def __contains__(self, __item):
         return __item in self.files
     
-    def add(self, *__files, **kwargs):
-        return self.add_files(*__files, **kwargs)
+    def add(cls, *__files, **kwargs):
+        return cls.add_files(*__files, **kwargs)
     
-    def mul(self, *__dirs, **kwargs):
-        return self.add_dirs(*__dirs, **kwargs)
+    def mul(cls, *__dirs, **kwargs):
+        return cls.add_dirs(*__dirs, **kwargs)
     
     def get(self, __key=None, __default=None):
-        assert __key is not None, LoaderException(222, '')
+        assert __key is not None, LoaderException(222)
         if __key in self.files:
             return self.files[__key]
         return __default
@@ -274,7 +281,7 @@ class DataLoader:
                 LoaderException(200, self.__class__.__name__)
         
         assert all((self.ext_defaults, self.all_)) is False, \
-                LoaderException(202, self.__class__.__name__, ', '.join(EXTENSIONS._defaults))
+                LoaderException(202, self.__class__.__name__, self.__DEFAULTS)
         
         self.__files = None
         self.__index = 0
@@ -283,35 +290,33 @@ class DataLoader:
     
     @cached_property
     def _get_files(self):
-        _defaults = EXTENSIONS._defaults
+        _defaults = self.__DEFAULTS
         if self.ext_defaults:
             _defaults = [ext for ext in self._validate_exts(self.ext_defaults)]
         elif self.all_:
-            _defaults = EXTENSIONS._ALL['empty'].suffix_
+            _defaults = self.__ALL['empty'].suffix_
         
         return self.get_files(self.ext_path, _defaults)
     
-    @staticmethod
-    def get_files(__path, __defaults=EXTENSIONS._defaults):
+    def get_files(self, __path, __defaults=EXTENSIONS._defaults):
         _no_dirs = lambda _path: _path.is_file() and not _path.is_dir()
         _ext_pat = partial(compiler, __defaults)
         return (i for i in __path.glob('*') \
                 if _ext_pat(rm_p(i.suffix)) \
-                and DataLoader._validate_path(i) \
+                and self._validate_path(i) \
                 and _no_dirs(i))
     
-    @staticmethod
-    def _validate_exts(__exts):
-        __valid_exts = [rm_p(ext) \
+    def _validate_exts(self, __exts):
+        __valid_exts = (rm_p(ext) \
                         for ext in __exts \
-                        if rm_p(ext) in EXTENSIONS._ALL]
+                        if rm_p(ext) in self.__ALL)
         
         __failed = list(filterfalse(lambda ext: ext in __valid_exts, __exts))
-        assert len(__valid_exts), LoaderException(210, _s(__failed), __failed, EXTENSIONS._ALL.keys())
+        assert iter(__valid_exts), LoaderException(210, _s(__failed), __failed, list(self.__ALL))
         
         if __failed:
-            LoaderException(215, _log_method=logging.warning)
-        return iter(__valid_exts)
+            LoaderException(215, __failed, _log_method=logging.warning)
+        return __valid_exts
     
     @staticmethod
     def _validate_path(__path, __raise=False):
@@ -321,42 +326,41 @@ class DataLoader:
         try:
             path = Path(__path)
         except TypeError as t_error:
-            raise (LoaderException(230, __path, t_error))
+            raise LoaderException(230, __path, t_error)
         
         if not path:
             _raise(LoaderException(800, path))
-            return None
+            return
         
         elif not path.exists():
             _raise(LoaderException(404, path))
-            return None
+            return
         
         elif (not path.is_file()) \
             and (not path.is_dir()) \
             and (not path.is_absolute()):
             _raise(LoaderException(707, path))
-            return None
+            return
         
-        elif re.match(r'^[._]', path.stem):
+        elif compiler(['^\\.', '^\\_'], path.stem):
             _raise(LoaderException(0, message=f'Skipping {path.stem}', _log_method=logging.warning))
-            return None
+            return
         
         return path
 
-    @staticmethod
-    def _get_params(__method):
+    @classmethod
+    def _get_params(cls, __method):
         import inspect
         try: 
             __sig = inspect.signature(__method)
         except TypeError:
             raise LoaderException(800, __method)
-        return iter(__sig.parameters.keys())
+        return iter(__sig.parameters)
     
-    @staticmethod
-    def _ext_method(__path):
+    def _ext_method(self, __path):
         __suffix = rm_p(__path.suffix)
         __method = None
-        __all = EXTENSIONS._ALL
+        __all = self.__ALL
         if __suffix==__all['empty'].suffix_:
             __method = __all['empty'].loader_
         elif __suffix in __all:
@@ -371,43 +375,52 @@ class DataLoader:
                     and value is not None}
         return self._load_data(__path, __method, __kwargs)
     
-    @staticmethod
+    @classmethod
     @cache
-    def load_file(file_path, **__kwargs):
-        dl = DataLoader
-        _path = dl._validate_path(file_path, True)
-        p_method = dl._ext_method(_path)
+    def load_file(cls, file_path, **__kwargs):
+        _path = cls._validate_path(file_path, True)
+        p_method = cls._ext_method(cls, _path)
         __kwargs = {} if __kwargs is None else __kwargs
-        loaded_file = dl._load_data(_path, p_method, __kwargs)
+        loaded_file = cls._load_data(cls, _path, p_method, __kwargs)
         return loaded_file
 
-    @staticmethod
-    def _load_data(path, method, __kwargs):
+    def _load_data(self, path, method, __kwargs):
+        from json.decoder import JSONDecodeError
+        from pandas.errors import ParserError, DtypeWarning, EmptyDataError
+        
         p_name = Path(path.parts[-1])
         p_contents = None
-        FileInfo = ExtInfo('FileInfo', ['name_', 'contents_'])
+        FileInfo = ExtInfo(typename='FileInfo',
+                            field_names=('name_', 'contents_'),
+                            module='DataLoader')
+        __errors = dict(zip((PermissionError, UnicodeDecodeError,
+                            ParserError, DtypeWarning, OSError, 
+                            EmptyDataError, JSONDecodeError, Exception),
+                            (13, 100, 303, 400, 402, 607, 102, 500)))
         try:
             p_contents = method(path, **__kwargs)
-        except PermissionError: raise LoaderException(13, p_name)
-        except UnicodeDecodeError: raise LoaderException(100, p_name)
-        except ParserError: raise LoaderException(303, p_name)
-        except DtypeWarning: raise LoaderException(400, p_name)
-        except OSError: raise LoaderException(400 ,p_name)
-        except EmptyDataError:
+        except tuple(__errors) as _error:
+            _exception = type(_error)
+            error_code = __errors.get(_exception, 500)
+            _placeholder_count = _ERRORS.get(error_code, _ERRORS[-1]).count('{}')
+            __raise = partial(LoaderException, error_code, p_name, _log_method=logging.warning)
+            if _exception == JSONDecodeError:
+                __raise(_error.pos, _error.lineno, _error.colno)
+            elif _placeholder_count==2:
+                __raise(_error)
+            else:
+                __raise()
             p_contents = 0
-        except JSONDecodeError as e:
-            LoaderException(102, p_name, e.pos, e.lineno, e.colno, _log_method=logging.warning)
-            p_contents = 0
-        except Exception as _e: raise LoaderException(500, f'{p_name}: {_e}')
         
         if (isinstance(p_contents, int) and p_contents==0) \
             or (hasattr(p_contents, 'empty') and p_contents.empty):
-            LoaderException(0, message=f'{_ERRORS[607].format(p_name)} File will be skipped.', _log_method=logging.warning)
             return FileInfo(p_name, None)
+        
         return FileInfo(p_name, p_contents)
     
     @cache
     def _execute_path(self):
+        dl_executor._initializer = _dl_initializer()
         _files = dl_executor.map(self._check_ext, self._get_files)
         return {Path(file.name_).stem: file.contents_ for file in _files if file.contents_ is not None}
     
@@ -417,25 +430,23 @@ class DataLoader:
             self.__files = self._execute_path()
         return self.__files
     
-    @staticmethod
-    def add_files(*__files, **kwargs):
-        assert len(__files)>=1, LoaderException(220, '')
-        dl = DataLoader
-        files = map(Path, __files)
-        loaded_files = dl_executor.map(partial(dl.load_file, **kwargs), (dl._validate_path(path, True) for path in files))
+    @classmethod
+    def add_files(cls, *__files, **kwargs):
+        assert len(__files)>=1, LoaderException(220)
+        loaded_files = dl_executor.map(partial(cls.load_file, **kwargs), (cls._validate_path(path) \
+                        for path in map(cls._validate_path, __files)))
         return {Path(file.name_).stem: file.contents_ for file in loaded_files if file.contents_ is not None}
     
-    @staticmethod
-    def add_dirs(*__dirs, __merge=False, **kwargs):
-        assert len(__dirs)>=1, LoaderException(220, '')
-        dl = DataLoader
-        directories = (dl._validate_path(_path, True) for _path in __dirs)
+    @classmethod
+    def add_dirs(cls, *__dirs, __merge=False, **kwargs):
+        assert len(__dirs)>=1, LoaderException(220)
+        directories = (cls._validate_path(_path) for _path in __dirs)
         
         if not __merge:
-            loaded_directories = dl_executor.map(partial(dl, **kwargs), directories)
+            loaded_directories = dl_executor.map(partial(cls, **kwargs), directories)
             return DynamicDict({i.ext_path.stem: i for i in loaded_directories})
         
-        loaded_directories = (dl.load_file(j, **kwargs) for i in directories for j in dl.get_files(i))
+        loaded_directories = (cls.load_file(j, **kwargs) for i in directories for j in cls.get_files(i))
         return DynamicDict({p.name_.stem: p.contents_ for p in loaded_directories if p.contents_ is not None})
     
     @staticmethod
@@ -449,26 +460,37 @@ class DataLoader:
             return ConfigManager
         return ConfigManager(**kwargs)
 
-@dataclass(kw_only=True)
+@dataclass(order=True)
 class ConfigManager:
-    config_ini: Any = field(init=True, default='db_config.ini')
-    sections: Any = field(init=True, default_factory=lambda: [f'Section{i}' for i in range(1,4)])
+    config_ini: Any = None
+    sections: Any = field(init=True,
+                        default_factory=lambda: [f'Section{i}' for i in range(1,4)]
+                        )
+                        
     encrypt: Any = field(init=True,
                         default=True,
-                        repr=False)
-    config: Any = field(init=False, repr=False, default_factory=DynamicDict)
+                        repr=False,
+                        kw_only=True)
+                        
+    config: Any = field(init=False,
+                        repr=False,
+                        default_factory=DynamicDict)
     
-    _sql_keys: Any = field(init=False, repr=False, default_factory=lambda: ConfigManager._sql_config_sections())
+    _sql_keys: Any = field(init=False,
+                        repr=False,
+                        default_factory=lambda: ConfigManager._sql_config_sections)
+    
     _ini_name: Any = field(init=False, default='db_config')
-    _config_parser: Any = field(init=False, repr=False, default_factory=lambda: _new_config())
+    _config_parser: Any = field(init=False,
+                                repr=False,
+                                default_factory=lambda: _new_config())
     
     def __post_init__(self):
         self.config_ini = self._validate_config()
         self.config = self._get_config()
     
-    def __repr__(self):
-        return f'{self.__class__.__name__}({[f'{i.name}={getattr(self, i.name)}'
-                                            for i in fields(self) if i.repr is True]})'
+    def _map_ini_suffix(self, __path):
+        self.config_ini = Path(__path).with_suffix('.ini')
     
     def _validate_config(self):
         _ini = self.config_ini
@@ -481,9 +503,9 @@ class ConfigManager:
         return ConfigManager.create_sql_config(sections_only=True)
     
     @staticmethod
-    def create_sql_config(__name='sql_config.ini', sections_only=False):
+    def create_sql_config(__ini_name='sql_config', sections_only=False):
+        _ini_name = Path(__ini_name).with_suffix('.ini')
         _config_parser = _new_config()
-        _ini_name = DataLoader._validate_path(__name)
         
         _generic = {
                 'host': 'None',
@@ -491,7 +513,9 @@ class ConfigManager:
                 'user': 'None',
                 'password': 'None'
             }
+        
         _other = {'database': 'None'}
+        
         _mysql = {
                 **{k:v for k,v in _generic.items() if k!='user'},
                 'username': 'None'
@@ -515,7 +539,7 @@ class ConfigManager:
             with open(_ini_name, mode='w', encoding='utf-8') as sql_file:
                 _config_parser.write(sql_file)
             LoaderException(7, _ini_name, _log_method=logging.info)
-            LoaderException(0, message=f'\n{_ini_name!r}: {repr(sections)}', _log_method=logging.info)
+            LoaderException(0, message=f'`{_ini_name}`: {repr(sections)}', _log_method=logging.info)
             return
         __input = f'The file `{_ini_name}` already exists. Overwriting will simply empty it out with null values. Proceed (N/y)? '
         if _ini_name.is_file():
@@ -527,26 +551,26 @@ class ConfigManager:
         return _write_file()
 
     def _get_config(self):
-        CC = CConfigParser
-        self._config_parser.read(self.config_ini)
-        _ini_sections = list(filter(lambda __key: __key!='DEFAULT', self._config_parser))
-        __name = Path(self._ini_name or self.config_ini)
+        CC = self._config_parser
+        CC.read(self.config_ini)
+        _ini_sections = list(filterfalse(lambda __key: __key=='DEFAULT', CC))
+        __name = Path(self.config_ini)
         _has_nulls = lambda __key, __method=all: __method(CC.convert_value(val) for val in \
-                                                        dict(self._config_parser.items(__key)).values())
+                                                        dict(CC.items(__key)).values())
         def _clean_config():
             _config = {
                         key: 
                             {k: CC.encrypt_text(v, __name.stem, True) if all((compiler(_PASS, k), self.encrypt, CC.convert_value(v) is not None)) \
-                            else v for k, v in self._config_parser.items(key)}
+                            else v for k, v in CC.items(key)}
                             for key in _ini_sections
                     }
             assert len(_config), LoaderException(899, __name.name)
             
-            __sections_defaults = list(*(i.default_factory() for i in fields(self) if i.name=='sections'))
-            if self.sections!=__sections_defaults:
+            __section_defaults = list(*(i.default_factory() for i in fields(self) if i.name=='sections'))
+            if self.sections!=__section_defaults:
                 try:
                     for _ in self.sections:
-                        self._config_parser.items(_)
+                        CC.items(_)
                 except NoSectionError:
                     if isinstance(self.sections, str):
                         self.sections = [self.sections]
@@ -557,17 +581,17 @@ class ConfigManager:
                         good_has_nulls = list(filterfalse(_has_nulls, _possible_keys))
                         __none = lambda i: all((compiler(good, i), compiler(good_has_nulls, i)))
                         __bad = list(filter(__none, self.sections))
-                        assert good, LoaderException(1003, f'[{', '.join(self.sections)}]',  _possible_keys)
+                        assert good, LoaderException(1003, self.sections,  _possible_keys)
                         if __bad:
                             LoaderException(0, message=f'Invalid section{_s(__bad)}, skipping: {__bad}', _log_method=logging.warning)
                         
                         if good_has_nulls:
-                            LoaderException(1002, f'[{', '.join(good_has_nulls)}]', _log_method=logging.warning)
+                            LoaderException(1002, good_has_nulls, _log_method=logging.warning)
                         
                         self._update_attrs(__name.absolute(), list(good), __name.stem)
                         return good
                     
-                    assert len(_possible_keys), LoaderException(890, f'[{', '.join(self.sections)}]', _ini_sections)
+                    assert len(_possible_keys), LoaderException(890, self.sections, _ini_sections)
             self._update_attrs(__name.absolute(), list(filter(_has_nulls, _ini_sections)),__name.stem)
             return _config
         return _clean_config()
@@ -581,7 +605,7 @@ class ConfigManager:
     
     def _update_config(self, __section=None, __sources=None, encrypt=True):
         __sources = {} if __sources is None else __sources
-        __config = dict((k, CConfigParser.encrypt_text(v) if all((compiler(_PASS, k), encrypt)) else v) for k,v in __sources.items())
+        __config = dict((k, self._config_parser.encrypt_text(v, self._ini_name) if all((compiler(_PASS, k), encrypt)) else v) for k,v in __sources.items())
         if __section:
             self.config[__section].update(**__config)
         return self.config.update(**__config)
