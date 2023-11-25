@@ -20,9 +20,10 @@ _PASS = [
     ]
 
 _ERRORS = {
-        -1000: 'CODE -1000: HumanError\nCheck if error code `{!r}` is still being used.',
+        -1000: 'CODE -1000: HumanError\nError code `{}` is not being used anymore.',
         -1: 'CODE -1: ImportantUserMessage\nPlease exercise caution when providing specific keyword arguments, depending on how the DataLoader is initialized. In case of any errors, you can utilize the \'no_method\' keyword to return all files as IO.textWrapper.',
         0: 'CODE 0: EmptyDataLoaderError]\nNo files were detected. Please initialize a DataLoader instance with validated file paths to proceed.',
+        1: 'CODE 1: NoDundersOrDynamicError\n{!r} lacks support for dunder methods or DynamicDict capabilities. Kindly include the `dynamic` argument or utilize the `files` attribute to obtain files in generator format and attempt the operation anew.',
         7: 'CODE 7: SQLConfigCreation\nAn empty SQL .INI configuration file has been successfully created as `{!r}`.\n' \
             'Once you have made the necessary modifications, please re-run ConfigManager using the updated SQL configuration file to include encryption.\n',
         13: 'CODE 13: PermissionError\nYou do not have permission to access `{!r}`',
@@ -37,9 +38,10 @@ _ERRORS = {
         215: 'CODE 215: ExtensionsError:\nSkipping invalid extensions: `{!r}`',
         220: 'CODE 220: AddingFilesError:\nThe input must include at least one valid file path.',
         221: 'CODE 221: GetKeyError:\n`{!r}` is not a valid key. Did you mean `{!r}`?',
-        222: 'CODE 222: NoKeyError:\nA key must be provided; otherwise, an empty key with a default argument is required.',
+        222: 'CODE 222: NoKeyError:\nA key must be provided; otherwise, pass in None to return None.',
         223: 'CODE 223: NoItemError:\n`{!r}` was not found within the loaded files. Did you mean `{!r}`?',
         225: 'CODE 225: NoAttributeError:\n`{!r}` is not a valid attribute name. Did you mean `{!r}`?',
+        227: 'CODE 227: GetAttributeError:\nUsing `__getitem__` is not suitable. File names with unique extensions have been identified. It is imperative to include the file extensions.',
         230: 'CODE 230: DataLoaderPathError:\nA valid path is required. If a path is provided, then the value of `{!r}` is considered invalid.\nError message: {!r}',
         303: 'CODE 303: ParserError\nParsing error for file `{!r}`',
         400: 'CODE 400: DtypeWarning\nThere are data type warnings for `{!r}`.\nConsider specifying data types with the dtype parameter',
