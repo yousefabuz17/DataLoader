@@ -23,7 +23,7 @@ _ERRORS = {
         -1000: 'CODE -1000: HumanError>>Error code {} is not being used anymore.',
         -1: 'CODE -1: ImportantUserMessage>>Please exercise caution when providing specific keyword arguments, depending on how the DataLoader is initialized. In case of any errors, you can utilize the \'no_method\' keyword to return all files as IO.textWrapper.',
         0: 'CODE 0: EmptyDataLoaderError>>No files were detected. Please initialize a DataLoader instance with validated file paths to proceed.',
-        1: 'CODE 1: NoDundersOrDynamicError>>{!r} lacks support for dunder methods or {!r} capabilities. Kindly include the dynamic argument and initialize the {!r}.',
+        1: 'CODE 1: NoDundersOrDynamicError>>{!r} lacks support for {!r} __dunder__ methods or {!r} capabilities. Kindly include the dynamic argument, otherwise, initialize the {!r} (Default Instance -> {!r}).',
         7: 'CODE 7: SQLConfigCreation>>An empty SQL .INI configuration file has been successfully created as {!r}.\n' \
             'Once you have made the necessary modifications, please re-run ConfigManager using the updated SQL configuration file to include encryption.\n',
         13: 'CODE 13: PermissionError>>You do not have permission to access {!r}',
