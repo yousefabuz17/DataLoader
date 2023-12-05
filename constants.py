@@ -21,6 +21,7 @@ _PASS = [
     ]
 
 _ERRORS = {
+        None: '{}',
         -1000: 'CODE -1000: HumanError>>Error code {} is not being used anymore.',
         -1: 'CODE -1: ImportantUserMessage>>Please exercise caution when providing specific keyword arguments, depending on how the DataLoader is initialized. In case of any errors, you can utilize the \'no_method\' keyword to return all files as IO.textWrapper.',
         0: 'CODE 0: EmptyDataLoaderError>>No files were detected. Please initialize a DataLoader instance with validated file paths to proceed.',
