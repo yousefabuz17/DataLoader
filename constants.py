@@ -1,10 +1,10 @@
 __all__ = ('_PASS', '_ERRORS')
 
-_PASS = [
+_PASS = (
         "Password",
         "Passcode",
         "Secret",
-        "Key",
+        "PassKey",
         "AccessCode",
         "SecurityPhrase",
         "AuthenticationToken",
@@ -18,7 +18,7 @@ _PASS = [
         "EncryptionKey",
         'HiddenKey',
         'Token',
-    ]
+        )
 
 _ERRORS = {
         None: '{}',
@@ -34,6 +34,7 @@ _ERRORS = {
         100: 'CODE 100: UnicodeDecodeError>>There was an encoding error when reading {!r}',
         102: 'CODE 102: JSONDecodeError>>Failed to decode JSON: {!r}. Position: {!r}. Line: {!r}. Column: {!r}.',
         150: 'CODE 150: InjectingFilesError>>Requires at least one valid directory to be injected.',
+        170: 'CODE 170: ComparingSetsError>>Provided arguments are not suitable formats for comparing.\nERROR: {}',
         200: 'CODE 200: DataLoaderAttributeError>>{!r} necessitates a valid file path. Please review all paths before initiating.',
         201: 'CODE 201: DataLoaderCallingError>>Cannot specify both \'dynamic\' and \'generator\' options. Omitting both will default to returning an instance of {!r}.',
         202: 'CODE 202: DataLoderAttributeError>>Cannot specify both \'defaults\' and \'all_\' attributes. Omit both and {!r} will use the following extensions by default:\n{!r}.',
@@ -45,7 +46,7 @@ _ERRORS = {
         223: 'CODE 223: NoItemError>>{!r} was not found within the loaded files. Did you mean {!r}?',
         225: 'CODE 225: NoAttributeError>>{!r} is not a valid attribute name. Did you mean {!r}?',
         227: 'CODE 227: GetAttributeError>>Using __getitem__ is not suitable. File names with unique extensions have been identified. It is imperative to include the file extensions.',
-        228: 'CODE 228: DistinctFileNamesError>> File names with unique extensions have been identified.',
+        228: 'CODE 228: DistinctFileNamesError>> File names with unique extensions have been identified. ',
         230: 'CODE 230: DataLoaderPathError>>A valid path is required. If a path is provided, then the value of {!r} is considered invalid.\nError message: {!r}',
         270: 'CODE 270: IntegrityCheckerError>>The integrity checker has failed during the loading process, indicating potential data tampering.',
         303: 'CODE 303: ParserError>>Parsing error for file {!r}',
@@ -69,17 +70,16 @@ _ERRORS = {
         1003: 'CODE 1003: ConfigAttributeSectionError>>The provided key sections {!r} are invalid. Please review the arguments being passed.',
 }
 
-__defaults__ = lambda: (_PASS, _ERRORS)
-__str__ = __repr__ = lambda: f'<module {"constants"!r} from {__file__!r}\nDEFAULTS:\n{dict(zip(__all__,[_PASS, list(_ERRORS)]))}'
+__str__ = __repr__ = lambda: f'<module {"constants"!r} from {__file__!r}\nDEFAULTS:\n{dict(zip(__all__,(_PASS, list(_ERRORS))))}'
 __version__ = '1.0.0'
-
+TELLL = 0
 __doc__ = f"""
 Module: constansts (DataLoader)
 
 This module defines constants and error messages used in the DataLoader project.
 
 Constants:
-    - _PASS: List[str]: A list containing strings representing various password-related terms.
+    - _PASS: Tuple[str]: A tuple containing strings representing various password-related terms.
     - _ERRORS: Dict[int, str]: A dictionary containing error codes and corresponding error messages.
 
 Error Codes and Descriptions (Sample):
@@ -89,7 +89,7 @@ Error Codes and Descriptions (Sample):
 
 Functions:
     - __defaults__(): Returns a tuple containing _PASS and _ERRORS.
-    - __str__()|__repr__(): Returns the string representation of __defaults__.
+    - __str__()|__repr__(): Returns the string representation of __all__ values.
     - __version__: Module version set to {__version__!r}.
 
 Usage:
