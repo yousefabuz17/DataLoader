@@ -17,27 +17,31 @@ from copy import deepcopy
 from datetime import datetime
 from cryptography.fernet import Fernet
 from pdfminer.high_level import extract_pages
+from benedict import benedict
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict, namedtuple, defaultdict
 from functools import cached_property, partial, cache, wraps
-from itertools import filterfalse, chain, count, zip_longest
+from itertools import filterfalse, chain, count, tee, zip_longest
 from configparser import ConfigParser, NoSectionError, MissingSectionHeaderError
 from typing import Any, AnyStr, Dict, Generator, IO, Iterable
 from json.decoder import JSONDecodeError
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
-from constants import *
+from constants import _ERRORS, _PASS
 from dataclasses import dataclass, field, fields
 from reprlib import recursive_repr as _recursive_repr
 from abc import ABCMeta, abstractmethod
-from dataclasses_json import dataclass_json, LetterCase
+from dataclasses_json import dataclass_json
+
+
+__all__ = ('DataLoader', 'DataManager', 'DynamicDict', 'DynamicGen')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter(fmt='[%(asctime)s][LOG %(levelname)s]:%(message)s', 
                             datefmt='%Y-%m-%d %I:%M:%S %p')
-handler = logging.FileHandler(f'{Path(__file__).stem}.log', 'a')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+# handler = logging.FileHandler(f'{Path(__file__).stem}.log', 'a')
+# handler.setFormatter(formatter)
+# logger.addHandler(handler)
 
 #** Outside of ThreadPool to ensure it prints only once for each execution(path)
 def _dl_initializer(*__paths, executor_only=False, max_workers_only=False):
@@ -63,20 +67,22 @@ class _Generic(metaclass=ABCMeta):
         raise DLoaderException(*args, **kwargs)
     
     @abstractmethod
-    def _repr(cls, __iter):
-        _cls_name = cls._cap_cls_name(cls)
+    def _repr(cls, __obj):
+        _obj = __obj.items() if isinstance(__obj, dict) and hasattr(__obj, 'items') else __obj
+        _generic_name = _Generic._cap_cls_name
+        _cls_name = _generic_name(cls) if _generic_name(cls) in __all__ else _generic_name(__obj)
         _place_holder = '\n{}([{}])'
-        if type(cls)==DataLoader:
-            return f'<{DataLoader.__name__}.files object at {hex(id(cls))}>'
+        if _cls_name == 'DataLoader':
+            return f'<generator object {_cls_name}.files.<genexpr: key-value> at {hex(id(cls))}>'
         try:
             _items = list((k, cls._too_large(v),
-                            0 if not isinstance(k, Path) else os.stat(k).st_size) 
-                            for k, v in __iter)
+                            os.stat(k).st_size if isinstance(k, Path) else 0) 
+                            for k, v in _obj)
             _total_bytes, _total = _Generic._bytes_converter(sum(i[-1] for i in _items))
             _string = _place_holder.format(
                                 _cls_name,
                                 f',\n{' ':>{len(_cls_name)+2}}'.join(
-                                (f'({k}, {v}{', '+cls._bytes_converter(_b, True)[0] if isinstance(k, Path) else ''})' \
+                                (f'({k}{'' if not v else ', '+v}{', '+cls._bytes_converter(_b, symbol_only=True)[0] if isinstance(k, Path) else ''})' \
                                 for k, v, _b in _items)
                                 )
                             )
@@ -86,19 +92,30 @@ class _Generic(metaclass=ABCMeta):
         
         return _string if not _total else f'[{_total_bytes}] {_string}'
     
+    @abstractmethod
+    def __sizeof__(self, __other_gen=None):
+        #raise DLoaderException(None, message=f'{dl_error}\MESSAGE: Double check "posix" attribute is enabled and paths are all validated.')
+        _gen = __other_gen or self
+        _gen_contents = _gen.items() if hasattr(_gen, 'items') or isinstance(_gen, dict) else _gen
+        _total = sum(os.stat(Path(k)).st_size if isinstance(k, (str, Path)) else 0 for k,_v in _gen_contents)
+        _bytes_conveter = _Generic._bytes_converter
+        _not_posix = not _total and not any((isinstance(_path, Path) for _path,_v in _gen_contents))
+        return _bytes_conveter(_total, not_posix=_not_posix)
+    
     @staticmethod
     def _terminal_size():
         return shutil.get_terminal_size()
     
     @staticmethod
-    def _dl_raise(__errors, /, message_only=False, *, pre='', post='', verbose=False):
-        _dle = DLoaderException
-        _error = __errors if not callable(__errors) else type(__errors)(__errors)
-        _args = (None, f'{pre}{_error}{post}')
-        if not message_only:
-            raise _dle(*_args)
-        if verbose:
-            _dle(*_args)
+    def _dl_raise(__errors, /, _raise=False, *, pre='', post='', verbose=False):
+        _error = type(__errors)(__errors) if callable(__errors) else __errors
+        _args = (None, _string:=f'{pre}{_error}{post}')
+        _raise_dle = partial(DLoaderException, *_args)
+        if _raise:
+            raise _raise_dle()
+        elif verbose:
+            _raise_dle()
+        return _string
     
     @staticmethod
     @abstractmethod
@@ -150,8 +167,9 @@ class _Generic(metaclass=ABCMeta):
         return (lambda _cls: _cls.capitalize() if not _cls[0].isupper() else _cls)(__cls.__class__.__name__)
     
     @staticmethod
-    def _bytes_converter(__num, /, symbol_only=False, total_only=False):
+    def _bytes_converter(__num, /, symbol_only=False, total_only=False, not_posix=False):
         #XXX (KB)-1024, (MB)-1048576, (GB)-1073741824, (TB)-1099511627776
+        FSize = _Generic._cls_tuple('__FSize')
         _base = 1024
         _exp = np.arange(1,5)
         _conversions = dict(zip(('Kilobytes (KB)', 'Megabytes (MB)',
@@ -163,15 +181,22 @@ class _Generic(metaclass=ABCMeta):
         
         if total_only:
             return _total
-        return results
+        
+        if not _total:
+            _error = _ERRORS.get(25, -1000).format('DataLoader')
+            _Generic._dl_raise(_error, _raise=False)
+            if not_posix:
+                return (*results, f'<ERROR {repr('CODE 25')}>')
+        
+        return FSize(*results)
     
     @staticmethod
-    def _cls_tuple(__tuple, defaults=None):
+    def _cls_tuple(__tuple, defaults=None, **kwargs):
         _defaults = defaults or (None,)*2
-        _tuples = (namedtuple('Encrypter', ('text', 'key'), defaults=_defaults, module='__Encrypt'),
-                    namedtuple('ExtInfo', ('suffix_', 'loader_'), defaults=_defaults, module='__Ext'),
-                    namedtuple('PathInfo', ('path_', 'contents_'), defaults=_defaults, module='__Path'),
-                    namedtuple('FStats', ('sym_size', 'num_size'), defaults=_defaults, module='__FStats'))
+        _tuples = (namedtuple('Encrypter', ('text', 'key'), defaults=_defaults, module='__Encrypt', **kwargs),
+                    namedtuple('ExtInfo', ('suffix_', 'loader_'), defaults=_defaults, module='__Ext', **kwargs),
+                    namedtuple('PathInfo', ('path_', 'contents_'), defaults=_defaults, module='__Path', **kwargs),
+                    namedtuple('FullSize', ('sym_size', 'num_size'), defaults=_defaults, module='__FSize',**kwargs))
         try:
             return next((_tup for _tup in _tuples if _tup.__module__==__tuple))
         except StopIteration:
@@ -214,7 +239,7 @@ class _Generic(metaclass=ABCMeta):
         try:
             return \
                 [OrderedDict(cls.items()), ((*kv,) for kv in cls)] \
-                [isinstance(cls, DynamicGen)]
+                [isinstance(cls, (DataLoader, Generator))]
         except tuple(cls._all_errors()):
             pass
         return cls
@@ -256,18 +281,37 @@ class DynamicDict(OrderedDict, _Generic):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
+    class Benedict(benedict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+        
+        def __repr__(self):
+            return _Generic._repr(DynamicDict, self)
+        
+        __str__ = __repr__
+        
+        def __sizeof__(self):
+            raise DLoaderException(None, f'{DynamicDict.__name__} instances only.')
+    
     def __missing__(self, *args, **kwargs):
-        super(_Generic, DynamicDict).__missing__(*args, **kwargs)
+        _super = partial(_Generic.__missing__, *args, **kwargs)
+        if all((args, kwargs)):
+            _super(*args, **kwargs)
+        
+        _super(1, self.__class__.__name__,
+                *map(lambda __cls: getattr(__cls[1], '__name__'),
+                enumerate((DynamicDict, benedict, DataLoader, DataLoader)))
+                )
     
     @_recursive_repr()
     def __repr__(self):
-        return self._repr(self.items())
+        return self._repr(self)
     
     __str__ = __repr__
     
-    def __dir__(self):
-        return list(set(self.keys() + \
-                        super(OrderedDict, DynamicDict).__dir__()))
+    def __sizeof__(self, __other_gen=None):
+        _gen = __other_gen or self
+        return _Generic.__sizeof__(self, _gen)
     
     def __getattr__(self, __item):
         return self[__item]
@@ -329,6 +373,13 @@ class DynamicDict(OrderedDict, _Generic):
     
     def to_json(self, *args, **kwargs):
         return self.to_json(*args, **kwargs)
+    
+    def to_benedict(self):
+        return DynamicDict.Benedict(self)
+    
+    @staticmethod
+    def _get_benedict():
+        return DynamicDict.Benedict
 
 class CConfigParser(ConfigParser):
     dict_type = DynamicDict
@@ -409,9 +460,9 @@ class DLoaderException(BaseException):
             str_code = _ERRORS[__code]
             holders = (Path(obj).name if isinstance(obj, (Path, str)) \
                         else obj for obj in __obj)
+            return str_code.format(*holders)
         except AttributeError as attr_error:
             raise attr_error(_human_error)
-        
         return str_code.format(*holders)
     
     def _log_error(self, *args):
@@ -438,11 +489,10 @@ class Timer:
                 print(f'\033[33m{self.message!r}\033[0m')
             print(f'\033[32mExecution Time:\033[0m {minutes:.0f} minutes and {seconds:.5f} seconds.')
 
-
 @dataclass(slots=True, weakref_slot=True)
 class Extensions:
-    _defaults: Dict = field(init=False, default=None)
-    _ALL: Dict = field(init=False, default=None)
+    DEFAULTS: Dict = field(init=False, default=None)
+    ALL: Dict = field(init=False, default=None)
     
     def __post_init__(self):
         rm_p = _Generic._rm_period
@@ -453,8 +503,8 @@ class Extensions:
         _all_exts = set(ExtInfo(rm_p(i), pd.read_excel if rm_p(i) in ('xls','xlsx') else open) \
                         for i in _mimetypes \
                         if rm_p(i) not in _defaults)
-        self._defaults = [ext for ext in _defaults if ext!='empty']
-        self._ALL = {**{ext.suffix_: ext for ext in _all_exts},
+        self.DEFAULTS = [ext for ext in _defaults if ext!='empty']
+        self.ALL = {**{ext.suffix_: ext for ext in _all_exts},
                      **_defaults}
     
     def __defaults__(self):
@@ -471,7 +521,7 @@ class Extensions:
                 }
 
     def __repr__(self):
-        return f'{self.__class__.__name__}([{', '.join('{}={}'.format(*i) for i in self.__getstate__().items())}])'
+        return f'{self.__class__.__name__}({', '.join('{}={}'.format(*i) for i in self.__getstate__().items())})'
     
     __str__ = __repr__
     
@@ -480,6 +530,10 @@ class Extensions:
     
     def __subclass__(self):
         return _Generic._cls_tuple('__Ext')
+    
+    def to_json(self, __type=DynamicDict):
+        #XXX __type: DynamicDict | benedict
+        return __type(self.__getstate__()).to_json()
 
 EXTENSIONS = Extensions()
 _NEW_CONFIG = lambda: CConfigParser(allow_no_value=True,
@@ -495,28 +549,22 @@ class DynamicGen(Iterable, _Generic):
         self.__dict_gen = __dict_gen
     
     def __missing__(self, *args, **kwargs):
-        _super = partial(super().__missing__, *args, **kwargs)
-        if all((args, kwargs)):
-            _super(*args, **kwargs)
-        
-        _super(1, self.__class__.__name__,
-                *map(lambda __cls: getattr(__cls[1], '__name__'),
-                enumerate((DynamicGen, DynamicDict, DataLoader, DynamicGen, DataLoader)))
-                )
+        _Generic.__missing__(self, *args, **kwargs)
     
     def __repr__(self):
         return self._repr(self.__dict_gen)
     
     __str__ = __repr__
     
-    def __dir__(self):
-        return set(super().__dir__() + [str(i) for i,_j in self.__dict_gen])
-    
+    def __sizeof__(self, __other_gen=None):
+        _gen = __other_gen or self.__dict_gen
+        return _Generic.__sizeof__(self, _gen)
+
     def __iter__(self):
         return iter(self.__dict_gen)
         
     def __len__(self):
-        return 0 if not self.__dict_gen else sum(1 for __kv in self)
+        return 0 if not self.__dict_gen else sum(1 for __kv in self.__dict_gen)
     
     def __bool__(self):
         return bool(self.__len__())
@@ -535,7 +583,7 @@ class DynamicGen(Iterable, _Generic):
     def _missing(func):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
-            self.__missing__()
+            self.__missing__(self, None)
         return wrapper
     
     @_missing
@@ -552,81 +600,87 @@ class DynamicGen(Iterable, _Generic):
 
 class DataLoader(DynamicGen):
     __slots__ = ('ext_path', 'defaults',
-                'all_exts', 'module', '__files',
-                '__posix', '__ID')
+                '__files', '__posix', '__ID')
     
     _ID = count()
     _TIMER = Timer
-    _DEFAULTS = EXTENSIONS._defaults
-    _ALL = EXTENSIONS._ALL
+    _DEFAULTS = EXTENSIONS.DEFAULTS
+    _ALL = EXTENSIONS.ALL
     _HASHED_FILES = {}
     _KWARG_KEYS = frozenset(('dynamic', 'no_method',
                             'module', 'generator',
-                            'verbose', 'data_manager',
-                            'allow_empty_files'))
+                            'verbose', 'allow_empty_files',
+                            'manage_data', 'dynamic_with_benedict',
+                            'all_exts'))
     
     __MAXW = False
     
-    def __init__(self, ext_path, defaults=None,  
-                        all_exts=False, module=None,
-                        posix=True, **kwargs):
-        
+    def __init__(self, ext_path, defaults=None, /, posix=True, **kwargs):
         self.ext_path = ext_path
         self.defaults = defaults
-        self.all_exts = all_exts
-        self.module = module
         self.__posix = posix
         self.kwargs = kwargs
         self.__post_init__()
     
     def __post_init__(self):
-        _kwg = deepcopy(self.kwargs).get
+        for _key in self._KWARG_KEYS:
+            self.__setattr__(f'_{_key}', self.kwargs.pop(_key, None))
         
-        _dynamic, \
-        _generator, \
-        _data_manager = (_kwg('dynamic'),
-                        _kwg('generator'),
-                        _kwg('data_manager')
-                        )
         _missing = self.__missing__
-        
+        _needs_posix_enabled = ('manage_data', 'dynamic_with_benedict')
         if not self.ext_path:
             _missing(200, self.__class__.__name__, self.ext_path)
         
-        elif all((self.defaults, self.all_exts)):
+        elif all((self.defaults, self._all_exts)):
             _missing(202, self.__class__.__name__, self._DEFAULTS)
         
-        elif all((_dynamic, _generator)):
-            _missing(201, DynamicGen.__name__)
+        elif all((self._dynamic, self._generator)):
+            _missing(201, DataLoader.__class__.__name__)
         
-        elif all((not self.__posix, _data_manager)):
-            DLoaderException(370, DataManager.__name__,
-                            f'For optimal compatibility, "posix" attr must be passed in when providing the "data_manager" attribute.\n>>Provided paths will default to POSIX for you.')
+        elif all((not self.__posix,
+                self._manage_data or self._dynamic_with_benedict)):
+            
+            DLoaderException(371, _needs_posix_enabled)
             self.__posix = True
         
         self.__files = None
-        self.ext_path = self._validate_path(self.ext_path, True)
+        self.ext_path = self._validate_path(self.ext_path, True, verbose=self._verbose)
         self.defaults = self._validate_exts(self.defaults)
     
     def __missing__(self, *args, **kwargs):
-        super().__missing__(*args, **kwargs)
+        _missing = partial(DynamicGen.__missing__, self)
+        if all((args, kwargs)):
+            _missing(*args, **kwargs)
+        _missing(None)
     
     def __repr__(self):
-        return self._repr(self.files)
+        return self._repr(self.__call__())
     
     __str__ = __repr__
     
-    def __call__(self, *args, **kwargs):
-        _kwg = self.kwargs.get
-        if _kwg('data_manager'):
-            return DataManager(self.files, *args, **kwargs)
-        elif all((_kwg('dynamic'),
-                not isinstance(self.files, DynamicDict),
-                not _kwg('generator'))):
-            return DynamicDict(self.files)
-        elif _kwg('generator'):
-            return self.files
-        return DynamicGen(self.files)
+    def __call__(self, __other=None):
+        _files = __other or self.files
+        if not _files:
+            self.__missing__(self, 0)
+        
+        if all((self._dynamic,
+                not isinstance(_files, DynamicDict))):
+            
+            return DynamicDict(_files)
+        
+        elif self._manage_data:
+            return self.manage_data()
+        
+        elif self._dynamic_with_benedict:
+            return DynamicDict.Benedict(_files)
+        
+        elif self._generator:
+            return DynamicGen(_files)
+        
+        return self
+    
+    def __sizeof__(self):
+        return super().__sizeof__(self.files)
     
     def _repr(cls, __iter):
         return super()._repr(__iter)
@@ -636,8 +690,8 @@ class DataLoader(DynamicGen):
         return _Generic._all_errors()
     
     @staticmethod
-    def _validate_path(*args):
-        return _Generic._validate_path(*args)
+    def _validate_path(*args, **kwargs):
+        return _Generic._validate_path(*args, **kwargs)
     
     @cached_property
     def _get_files(self):
@@ -645,7 +699,7 @@ class DataLoader(DynamicGen):
         
         if self.defaults:
             _defaults = self._validate_exts(self.defaults)
-        elif self.all_exts:
+        elif self._all_exts:
             _defaults = self._ALL['empty'].suffix_
         return self.get_files(self.ext_path, _defaults)
     
@@ -662,21 +716,22 @@ class DataLoader(DynamicGen):
     def _validate_exts(self, __exts):
         if __exts is None:
             return
+        _exts = set(__exts)
         try:
-            _valid_exts = list(
+            _valid_exts = set(
                             self._rm_period(ext) \
-                            for ext in __exts \
+                            for ext in _exts \
                             if self._rm_period(ext) in self._ALL
                             )
             
-            _failed = list(filterfalse(lambda ext: ext in _valid_exts, __exts))
+            _failed = set(filterfalse(lambda ext: ext in _valid_exts, __exts))
         except tuple(self._all_errors()) as _errors:
             self._dl_raise(_errors, post=f'\nExtension argument provided: {__exts!r}')
         
-        if len(_failed)==len(__exts):
+        if _failed==_exts:
             raise DLoaderException(210, self._s_plural(len(_failed)), _failed, list(self._ALL))
         
-        if _failed and self.kwargs.get('verbose'):
+        if _failed and self._verbose:
             DLoaderException(215, _failed, _log_method=logger.warning)
         
         return _valid_exts
@@ -700,7 +755,7 @@ class DataLoader(DynamicGen):
         elif _suffix in _all:
             _method = _all[_suffix].loader_
         else:
-            if self.kwargs.get('verbose'):
+            if self._verbose:
                 DLoaderException(702,
                             __path.name,
                             _method,
@@ -713,7 +768,7 @@ class DataLoader(DynamicGen):
         _kwargs = {param: value for param, value in self.kwargs.items() \
                     if param in self._get_params(_method) \
                     and value is not None}
-        _verbose = self.kwargs.get('verbose')
+        _verbose = self._verbose
         if _kwargs and _verbose:
             DLoaderException(-1, _log_method=logger.info)
         
@@ -725,30 +780,36 @@ class DataLoader(DynamicGen):
             
             raise DLoaderException(150)
         
+        _kwargs = {
+                    **self.kwargs,
+                    'module': self.id,
+                    '_all_exts': self._all_exts,
+                    **__kwargs
+                }
+        
         with self._THREAD_LOCK:
             _all_files = self._THREAD_EXECUTOR.map(partial(DataLoader,
-                                                            module=self.id,
-                                                            all_exts=self.all_exts, **self.kwargs),
+                                                            **_kwargs),
                                                             __dirs)
         
         _gen_files = ((_cls.ext_path, _cls.__call__()) for _cls in _all_files)
         _type = next(self._get_type(_gen_files))
-        if self.kwargs.get('dynamic') and _type==DynamicDict:
-            self.files = DynamicDict(self.files)
-            self.files.update(**DynamicDict(_gen_files))
-            return self.files
         
-        _files = chain(((k,v) for k,v in self.files if k not in _gen_files), _gen_files)
-        self.files = DynamicGen(_files)
-        return self.files
+        if self._dynamic and _type==DynamicDict:
+            self.files = DynamicDict(self.files)
+            self.files.update(DynamicDict(_gen_files))
+            return self.__call__(self.files)
+        
+        self.files = chain(((k,v) for k,v in self.files if k not in _gen_files), _gen_files)
+        return self.__call__(self.files)
     
     @classmethod
     @cache
     def load_file(cls, file_path, **__kwargs):
-        _path = cls._validate_path(file_path, True)
+        _kwargs = {} or __kwargs
+        _path = cls._validate_path(file_path, True, verbose=_kwargs.get('verbose'))
         p_method = cls._ext_method(cls, _path)
-        __kwargs = {} or __kwargs
-        loaded_file = cls._load_file(cls, _path, p_method, __kwargs)
+        loaded_file = cls._load_file(cls, _path, p_method, _kwargs)
         return loaded_file
     
     def _load_file(cls, __path, __method, __kwargs):
@@ -760,7 +821,7 @@ class DataLoader(DynamicGen):
         _verbose = _org_get('verbose')
         _allow_empty = _org_get('allow_empty_files')
         _method = open if _org_get('no_method') else __method
-        cls._rm_kwargs(_org_kwargs)
+        cls._rm_cls_kwargs(_org_kwargs)
         
         with cls._TIMER(message=f'Executing {_p_name!r}', verbose=_verbose):
             try:
@@ -783,15 +844,18 @@ class DataLoader(DynamicGen):
                 p_contents = 0
             
             _path = cls._posix_converter(__path, posix=cls.__posix)
+            _hashed_value = cls.calculate_hash(__path)
             try:
                 if not isinstance((_id:=cls.id), property) \
                     and _id not in (_hashed:=cls._HASHED_FILES):
                     
                     _hashed[_id] = []
-                _hashed[_id].append({__path: cls.calculate_hash(__path)})
+                
+                _hashed[_id].append({__path: _hashed_value})
             
-            except TypeError:
-                pass
+            except TypeError as t_error:
+                if not cls.check_hash(__path):
+                    raise DLoaderException(270, f'{t_error}')
             
             return cls._check_empty(_path, p_contents, _allow_empty=_allow_empty)
     
@@ -827,7 +891,9 @@ class DataLoader(DynamicGen):
     def _execute_path(self):
         _max_workers = _dl_initializer(max_workers_only=True)
         _string = f'(DL)DataLoader MAXWORKERS={_max_workers}'
-        _verbose = self.kwargs.get('verbose')
+        _verbose = self._verbose
+        _EXECUTOR = self._THREAD_EXECUTOR
+        _TLOCK = self._THREAD_LOCK
         if _verbose:
             _ts = self._terminal_size().columns
             _prefix = _string.center(_ts, '-')
@@ -835,11 +901,13 @@ class DataLoader(DynamicGen):
                 DataLoader.__MAXW = True
                 print(f'\033[1;32m{_prefix}\033[0m')
             
-            self._THREAD_EXECUTOR._initializer = _dl_initializer(self.ext_path.parts[-2:])
+            _EXECUTOR._initializer = _dl_initializer(self.ext_path.parts[-2:])
         
+        _files = None
         try:
-            with self._THREAD_LOCK:
-                _files = self._THREAD_EXECUTOR.map(self._check_ext, self._get_files)
+            with _TLOCK:
+                _files = _EXECUTOR.map(self._check_ext, self._get_files)
+        
         except tuple(self._all_errors()) as _errors:
             self._dl_raise(_errors, verbose=_verbose)
         
@@ -847,28 +915,22 @@ class DataLoader(DynamicGen):
     
     @cached_property
     def files(self):
-        if self.__files is None:
-            self.__files = self._execute_path()
-            return self.__files
+        _posix = self._posix_converter
+        _files = self.__files
         
-        while self.check_hash():
-            _cache = self.__cache(self.__files)
+        if _files is None:
+            _files, _org = tee(self._execute_path(), 2)
+        
+            _stems_allowed = not self.__posix and self.compare_posix(_files)
+            _checked_files = ((_posix(k, self.kwargs), v) for k,v in _org) if _stems_allowed else _org
+
             try:
-                next(iter(self.__files))
+                next(iter(_files))
             except StopIteration:
-                self.__files = _cache.items()
+                return _org
             
-            return self.__files
+            return _checked_files
         
-        raise DLoaderException(270)
-    
-    def __cache(self, __files):
-        _files = ((k.name, v) for k,v in __files) if not self.__posix and self.compare_posix(__files) else __files
-        _cache = DynamicDict(_files)
-        try:
-            next(iter(_files))
-        except StopIteration:
-            _files = _cache
         return _files
     
     @staticmethod
@@ -894,6 +956,7 @@ class DataLoader(DynamicGen):
             
         except tuple(_Generic._all_errors()) as _errors:
             raise _dl_error(f'{_errors}')
+        
         return not _check_diffs(_first_set, _second_set)
     
     @staticmethod
@@ -917,21 +980,22 @@ class DataLoader(DynamicGen):
             return _hashed == _result
         raise DLoaderException(None, message=f'{__path} has no matches to compare too.\nOriginal hash value:\n{_hashed}')
     
-    def manage_data(self):
-        return DataManager(self.files)
-    
     @property
     def hashed_files(cls):
-        return DynamicDict(cls._HASHED_FILES)
+        return cls._HASHED_FILES
     
     @cached_property
     def id(self):
-        return f'ID_{next(DataLoader._ID)}' if not self.module else self.module
+        return f'ID_{next(DataLoader._ID)}' if not self._module else self._module
+    
+    @cached_property
+    def total_size(self):
+        return self.__sizeof__()
     
     @staticmethod
     def _posix_converter(__path, __kwargs=None, posix: bool=False):
         if __kwargs and not posix:
-            return __path if __kwargs.get('posix') else getattr(__path, 'name')
+            return __path if __kwargs.get('posix') else getattr(Path(__path), 'name')
         return __path.name if not posix else __path
     
     @classmethod
@@ -940,23 +1004,21 @@ class DataLoader(DynamicGen):
             raise DLoaderException(220)
         _posix = cls._posix_converter
         kwargs = deepcopy(__kwargs)
-        _gen_only = __kwargs.pop('generator', False)
-        
-        cls._rm_kwargs(__kwargs)
+        _gen_only = __kwargs.get('generator')
+        _verbose = __kwargs.get('verbose')
+        cls._rm_cls_kwargs(__kwargs)
         with cls._THREAD_LOCK:
             loaded_files = cls._THREAD_EXECUTOR.map(partial(cls.load_file, **__kwargs),
-                                                (path for path in map(cls._validate_path, __files)))
+                                                (path for path in map(partial(cls._validate_path, verbose=_verbose), __files)))
             
         __files = ((_posix(file.path_, kwargs), file.contents_) for file in loaded_files if file.contents_ is not None)
-        if _gen_only:
-            return __files
         
-        if kwargs.get('dynamic') and not isinstance(cls, DynamicDict):
+        if kwargs.get('dynamic') and not isinstance(cls, DynamicDict) and not _gen_only:
             return DynamicDict(__files)
-        return DynamicGen(__files)
+        return __files
     
     @classmethod
-    def _rm_kwargs(cls, __kwargs):
+    def _rm_cls_kwargs(cls, __kwargs):
         for i in cls._KWARG_KEYS:
             __kwargs.pop(i, False)
     
@@ -965,11 +1027,13 @@ class DataLoader(DynamicGen):
         if not len(__dirs)>=1:
             raise DLoaderException(220)
         
-        _directories = map(cls._validate_path, __dirs)
+        _org_kwargs = deepcopy(__kwargs)
+        _verbose = _org_kwargs.get('verbose')
+        _directories = map(partial(cls._validate_path, verbose=_verbose), __dirs)
         _dynamic = __kwargs.pop('dynamic', False)
         _merge = __kwargs.pop('merge', False)
         _defaults = __kwargs.pop('defaults', None)
-        _all = __kwargs.pop('all_exts', False)
+        _all = __kwargs.pop('_all_exts', False)
         _gen_only = __kwargs.pop('generator', False)
         _posix = cls._posix_converter
         
@@ -981,26 +1045,26 @@ class DataLoader(DynamicGen):
             __files = ((_posix(p.path_, __kwargs), p.contents_) for p in loaded_directories if p.contents_ is not None)
             
             if any((_dynamic and not isinstance(cls, DynamicDict),
-                    _gen_only,)):
+                    not _gen_only)):
                 
                 return [DynamicDict(__files), __files][int(_gen_only)]
             
-            return DynamicGen(__files)
+            return __files
         
         
         with cls._THREAD_LOCK:
-            loaded_directories = cls._THREAD_EXECUTOR.map(partial(cls, defaults=_defaults, all_=_all, **__kwargs), _directories)
+            loaded_directories = cls._THREAD_EXECUTOR.map(partial(cls, defaults=_defaults, all_=_all, **_org_kwargs), _directories)
         
         __files = ((_posix(__cls.ext_path, __kwargs), __cls.files) for __cls in loaded_directories)
         
-        if _gen_only:
-            return __files
-        
         __type = next(cls._get_type(__files))
         
-        if _dynamic and not __type==DynamicDict:
+        if _dynamic and not __type==DynamicDict and not _gen_only:
             return DynamicDict(__files)
-        return DynamicGen(__files)
+        return __files
+    
+    def manage_data(self):
+        return DataManager(DynamicDict(self.files))
     
     @staticmethod
     def load_sql(__database=''):
@@ -1013,7 +1077,7 @@ class DataLoader(DynamicGen):
             return ConfigManager
         return ConfigManager(**kwargs)
 
-class DataManager(Iterable, _Generic):
+class DataManager(_Generic):
     _ID = count()
     __slots__ = ('_paths', '_module', '_serializer',
                 '_posix', '_all_stats', '__ID')
@@ -1033,11 +1097,11 @@ class DataManager(Iterable, _Generic):
             for _p in self._paths:
                 self._validate_path(_p, True)
         
-        except DLoaderException as dl_error:
-            self.__missing__(370, self.__class__.__name__, f'ERROR: {dl_error}')
+        except:
+            raise DLoaderException(None, f'{self.__class__.__name__} contains invalid or no paths.') 
     
     def __missing__(self, *args, **kwargs):
-        return super().__missing__(*args, **kwargs)
+        return _Generic.__missing__(self, *args, **kwargs)
 
     def __repr__(self):
         return self._repr(zip_longest(self._paths, [None]))
@@ -1049,6 +1113,9 @@ class DataManager(Iterable, _Generic):
     
     def __call__(self):
         return self.all_stats
+    
+    def __sizeof__(self):
+        pass
     
     def _repr(cls, __iter):
         return super()._repr(__iter)
@@ -1067,11 +1134,11 @@ class DataManager(Iterable, _Generic):
     
     @staticmethod
     def _os_stats(__path):
-        FStats = _Generic._cls_tuple('__FStats')
+        FSize = _Generic._cls_tuple('__FSize')
         _stats = os.stat_result(os.stat(__path))
         _os_stats = DynamicDict({attr: getattr(_stats, attr) for attr in dir(_stats) if attr.startswith('st')})
         _os_stats.update({'st_fsize': \
-                        FStats(*DataManager._bytes_converter(_stats.st_size, True))})
+                        FSize(*DataManager._bytes_converter(_stats.st_size, symbol_only=True))})
         return _os_stats
     
     @staticmethod
@@ -1288,17 +1355,17 @@ def main():
     dm = DataManager
     cii = ConfigManager
 
-    nltk = dl(f'{Path.home()}/nltk_data/corpora/stopwords', dynamic=True, all_exts=True, no_method=False, posix=True, verbose=True, data_manager=False, module='NLTK', generator=False)()
-    print(nltk)
+    nltk = dl(f'{Path.home()}/nltk_data/corpora/stopwords', dynamic=True, all_exts=True, manage_data=False, no_method=False, posix=True, verbose=False, module='NLTK', generator=False, dynamic_with_benedict=False)()
+
 
 if (__main:=__name__) == '__main__':
     _dl_name = DataLoader.__class__.__name__
     parser = argparse.ArgumentParser(description=f'{_dl_name}: A powerful data loading utility.')
-    parser.add_argument('message', nargs='?', default=f'Executing {__main!r}', help=f'Title message for the execution of {__main}.')
+    parser.add_argument('message', nargs='?', default=f'Executing {__main!r}.py', help=f'Title message for the execution of {__main}.')
     parser.add_argument('--verbose', action='store_true', help=f'Enable verbose mode for {_dl_name!r}.')
-    args = parser.parse_args()
-    _message = args.message
-    _verbose = args.verbose or True
+    _args = parser.parse_args()
+    _message = _args.message
+    _verbose = _args.verbose or True
     
     with Timer(message=_message, verbose=_verbose):
         main()
