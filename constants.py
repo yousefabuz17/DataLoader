@@ -36,7 +36,7 @@ _ERRORS = {
         100: 'CODE 100: UnicodeDecodeError>>There was an encoding error when reading {!r}',
         102: 'CODE 102: JSONDecodeError>>Failed to decode JSON: {!r}. Position: {!r}. Line: {!r}. Column: {!r}.',
         150: 'CODE 150: InjectingFilesError>>Requires at least one valid directory to be injected.',
-        170: 'CODE 170: ComparingSetsError>>Provided arguments are not suitable formats for comparing.\nERROR: {}',
+        170: 'CODE 170: ComparingSetsError>>Provided arguments are not suitable formats for comparing.\n>>ERROR: {}',
         200: 'CODE 200: DataLoaderAttributeError>>{!r} necessitates a valid file path. Please review all paths before initiating.',
         201: 'CODE 201: DataLoaderCallingError>>Can only specify one of the following attributes {} options. Omitting all will default to returning {!r} object.',
         202: 'CODE 202: DataLoderAttributeError>>Cannot specify both \'defaults\' and \'all_\' attributes. Omit both and {!r} will use the following extensions by default:\n{!r}.',

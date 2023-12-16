@@ -30,9 +30,11 @@ from json.decoder import JSONDecodeError
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
 from constants import _ERRORS, _PASS
 from dataclasses import dataclass, field, fields
-from reprlib import recursive_repr as _recursive_repr
+from reprlib import recursive_repr
 from abc import ABCMeta, abstractmethod
 from dataclasses_json import dataclass_json
+import asyncio
+import aiofiles
 
 
 __all__ = ('DataLoader', 'DataManager', 'DynamicDict', 'DynamicGen')
@@ -70,7 +72,7 @@ class DynamicThread:
     _executor = None
     
     def __repr__(self):
-        return f'{self.__class__.__name__}(_lock={self.THREAD_LOCK}, _thread={self.THREAD_EXECUTOR})'
+        return f'{self.__class__.__name__}(_lock={self.THREAD_LOCK}, _executor={self.THREAD_EXECUTOR})'
     
     __str__ = __repr__
     
@@ -108,7 +110,7 @@ class DynamicThread:
                             __path))
     
     def get_threads(cls):
-        return cls.THREAD_LOCK, cls.THREAD_EXECUTOR
+        return (cls.THREAD_LOCK, cls.THREAD_EXECUTOR)
     
     @property
     def THREAD_EXECUTOR(self):
@@ -121,10 +123,20 @@ class DynamicThread:
         if self._lock is None:
             self._lock = threading.Lock()
         return self._lock
+    
+    def _print_header(self):
+        _max_workers = self._dl_initializer(max_workers_only=True)
+        _terminal_size = self._terminal_size().columns
+        _prefix = (lambda _self: f'({''.join(filter(str.isupper, _self))}){_self} MAXWORKERS={_max_workers}')(self.__class__.__name__)
+        _divider = _prefix.center(_terminal_size, '-')
+        print(f'\033[1;32m{_divider}\033[0m')
 
 class _Generic(DynamicThread, metaclass=ABCMeta):
     _NAMEDTUPLES = {}
     _CLASSES = {}
+    
+    def __init_subclass__(cls):
+        cls._CLASSES[cls.__name__] = cls
     
     @abstractmethod
     def __missing__(cls, *args, **kwargs):
@@ -132,10 +144,10 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
     
     @classmethod
     @abstractmethod
-    def _repr(cls, __obj, module=None):
-        _get_cls = lambda __key: cls._CLASSES.get(__key, __key)
-        _gen_types = (_get_cls('DataLoader'), Generator, _get_cls('DynamicGen'))
-        _dict_types = (dict, _get_cls('DynamicDict'), DynamicDict._get_benedict(), benedict)
+    def _repr(cls, __obj, module=None, display_all=False):
+        get_inherited_cls = cls.get_inherited_cls
+        _gen_types = (get_inherited_cls('DataLoader'), Generator, get_inherited_cls('DynamicGen'))
+        _dict_types = (dict, get_inherited_cls('DynamicDict'), DynamicDict._get_benedict(), benedict)
         _obj = (lambda _x: _x.items() if isinstance(_x, _dict_types) else _x)(__obj)
         _cls_name = cls._cap_cls_name(cls) if not module else module
         _place_holder = '{}({})'
@@ -143,9 +155,9 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
             or _cls_name == _gen_types[0].__name__ \
             or isinstance(__obj, _gen_types[:2]):
             
-            return f'<generator object {_cls_name}.files.<genexpr: key-value> at {hex(id(cls))}>'
+            return f'<generator object {_cls_name}.files.<key-value> at {hex(id(cls))}>'
         try:
-            _items, _gen_items = tee((k, cls._too_large(v),
+            _items, _gen_items = tee((k, cls._too_large(v, display_all=display_all),
                                         os.stat(k).st_size if isinstance(k, Path) else 0) 
                                         for k, v in _obj)
             _total_bytes = cls._bytes_converter(sum(i[-1] for i in _items))
@@ -174,7 +186,7 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
         _bytes_stats = _bytes_conveter(_total, not_posix=_not_posix)
         if not _bytes_stats:
             #XXX itertools.tee instances
-            _error_message = _Generic._CLASSES.get('DataLoader').__name__, \
+            _error_message = self.get_inherited_cls('DataLoader').__name__, \
                             f'{self.__class__.__name__ +'.'+self.__sizeof__.__name__!r}'
             DLoaderException(50, *_error_message)
             return
@@ -280,23 +292,49 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
     
     @classmethod
     @cache
-    def create_subclass(cls, typename='NamedTuple', /, field_names=None, *, rename=False, module=None, defaults=None, **kwargs):
+    def create_subclass(cls, typename='FieldTuple', /,
+                            field_names=None, *,
+                            rename=False, module=None,
+                            defaults=None, **kwargs):
+        """
+        Create a dynamically generated namedtuple subclass.
+
+        Parameters:
+        - typename (str): Name of the named tuple subclass.
+        - field_names (List[str]): List of field names.
+        - rename (bool): Whether to rename invalid field names.
+        - module (str): Module name for the namedtuple subclass.
+        - defaults (Tuple): Default values for fields.
+        - num_attrs (int): Number of default attributes if field_names is not provided.
+        - **kwargs: Additional parameters.
+            - num_attrs (int): The number of default attributes assigned to the object when no specific field names are provided.
+            - field_docs (str): List of documentation strings for each field.
+
+        Returns:
+        - Named tuple subclass.
+        """
         _tuples = cls._NAMEDTUPLES
         try:
-            return cls.get_subclass(typename)
+            return _tuples.get(module) or cls.get_subclass(typename)
         except KeyError:
             _tuples[typename] = {}
         
-        _num_default_args = kwargs.pop('num_args', 5)
-        _field_names = field_names or np.core.defchararray.add('arg', np.arange(1, _num_default_args+1).astype(str))
-        _defaults = defaults or (None,) * len(_field_names)
+        num_attrs = kwargs.pop('num_attrs', 5)
+        if not isinstance(num_attrs, int) or num_attrs <= 0:
+            raise ValueError(f"{num_attrs!r} is not a positive integer.")
+
+        _field_names = field_names or np.core.defchararray.add('attr', np.arange(1, num_attrs+1).astype(str))
+        _none_generator = lambda _type=None: (_type,) * len(_field_names)
+        _defaults = defaults or _none_generator()
+        _field_docs = kwargs.pop('field_docs', _none_generator(''))
         _module = module or typename
         _new_tuple = namedtuple(typename=typename,
                                 field_names=_field_names,
                                 rename=rename,
                                 defaults=_defaults,
                                 module=_module)
-        _tuples[typename] = _new_tuple
+        setattr(_new_tuple, '__doc__', _field_docs)
+        _tuples[_module] = _new_tuple
         return _new_tuple
     
     @classmethod
@@ -305,6 +343,10 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
             return cls._NAMEDTUPLES[__subclass]
         except KeyError:
             cls.__missing__(None, f'{NamedTuple.__name__} {__subclass!r} has not been created yet')
+    
+    @classmethod
+    def get_inherited_cls(cls, __cls):
+        return cls._CLASSES.get(__cls, __cls)
     
     @property
     def hashed_files(cls):
@@ -320,20 +362,16 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
                 else '|'.join(map(re.escape, __k))
                 
         _compiled = re.compile('|'.join(_defaults), re.IGNORECASE).match(_k)
-        return _compiled
+        return bool(_compiled)
     
     @classmethod
     def _s_plural(cls, __word):
         _base = '{}'.format
         _hasattr = partial(hasattr, __word)
-        try:
-            if (_hasattr('__len__') and len(__word)>1) \
-                or (_hasattr('__gt__') and __word>1):
-                
-                return _base('s')
-        
-        except tuple(cls._all_errors()):
-            pass
+        if (_hasattr('__len__') and len(__word)>1) \
+            or (_hasattr('__gt__') and __word>1):
+            
+            return _base('s')
         
         return _base('')
     
@@ -355,7 +393,10 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
         return cls
     
     @classmethod
-    def _too_large(cls, value, max_length=None):
+    def _too_large(cls, value, max_length=None, display_all=False):
+        if display_all:
+            return value
+        
         _max_length = max_length if isinstance(max_length, int) \
                         else cls._terminal_size().columns
         
@@ -370,6 +411,7 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
                 (_length is not None) and (_length >= _max_length),
                 (hasattr(value, '__str__') and len(str(value)) >= _max_length),
                 isinstance(value, Generator),
+                isinstance(value, (pd.DataFrame, pd.Series)),
                 type(value)==type
                 )):
             return _cls_tag
@@ -388,7 +430,6 @@ class _Generic(DynamicThread, metaclass=ABCMeta):
 class DynamicDict(OrderedDict, _Generic):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        _Generic._CLASSES['DynamicDict'] = DynamicDict
     
     class Benedict(benedict):
         def __init__(self, *args, **kwargs):
@@ -403,15 +444,14 @@ class DynamicDict(OrderedDict, _Generic):
             raise DLoaderException(None, f'{DynamicDict.__name__!r} instances only.')
     
     def __missing__(self, *args, **kwargs):
-        _classes = _Generic._CLASSES
-        _get_cls = lambda __key: _classes.get(__key, __key).__name__ #lambda __key: f'{__key} CLASS NOT FOUND' if not _classes.get(__key)
+        get_inherited_cls = lambda __key: self.get_inherited_cls(__key).__name__
         _super = _Generic.__missing__
         if all((args, kwargs)):
             _super(self, *args, **kwargs)
         
-        _super(self, 1, self.__class__.__name__, *map(_get_cls, (DynamicDict, benedict, 'DataLoader', 'DataLoader')))
+        _super(self, 1, self.__class__.__name__, *map(get_inherited_cls, (DynamicDict, benedict, 'DataLoader', 'DataLoader')))
     
-    @_recursive_repr()
+    @recursive_repr()
     def __repr__(self):
         return self._repr(self, module=DynamicDict.__name__)
     
@@ -431,7 +471,8 @@ class DynamicDict(OrderedDict, _Generic):
         return self.get(__item)
     
     def __setattr__(self, __attr, __value):
-        self[__attr] = __value
+        if __attr!='_full_repr':
+            self[__attr] = __value
     
     @classmethod
     def _repr(cls, *args, **kwargs):
@@ -659,17 +700,17 @@ class Extensions:
 
 
 class DynamicGen(Iterable, _Generic):
-    __slots__ = ('__weakref__', '__keyvalue_gen')
+    __slots__ = ('__weakref__', '__keyvalue_gen', '__full_repr')
     
-    def __init__(self, __keyvalue_gen):
-        _Generic._CLASSES['DynamicGen'] = DynamicGen
+    def __init__(self, __keyvalue_gen, full_repr=False):
         self.__keyvalue_gen = __keyvalue_gen
+        self.__full_repr = full_repr
     
     def __missing__(self, *args, **kwargs):
         _Generic.__missing__(self, *args, **kwargs)
     
     def __repr__(self):
-        return self._repr(self.__keyvalue_gen, module=DynamicGen.__name__)
+        return self._repr(self.__keyvalue_gen, module=DynamicGen.__name__, display_all=self.__full_repr)
     
     __str__ = __repr__
     
@@ -731,25 +772,24 @@ class DataLoader(DynamicGen):
                             'module', 'generator',
                             'verbose', 'allow_empty_files',
                             'manage_data', 'dynamic_with_benedict',
-                            'all_exts'))
+                            'all_exts', 'full_repr'))
     
     __MAXW = False
     
-    def __init__(self, __path, defaults=None, /, *, posix=True, **kwargs):
+    def __init__(self, __path, defaults=None, posix=True, **kwargs):
         self.ext_path = __path
         self.defaults = defaults
         self.__files = None
         self._posix = posix
         self.kwargs = kwargs
-        self.__post_init__()
+        self.__post_init__(**self.kwargs)
     
-    def __post_init__(self):
-        _Generic._CLASSES['DataLoader'] = DataLoader
+    def __post_init__(self, **kwargs):
         _missing = self.__missing__
         _not_boolean = ('module')
         for _key in self._KWARG_KEYS:
             _setattr = partial(self.__setattr__, f'_{_key}')
-            _attr_key = self.kwargs.pop(_key, False) or False
+            _attr_key = kwargs.pop(_key, False) or False
             if _key not in _not_boolean:
                 _setattr(_attr_key) if isinstance(_attr_key, bool) else \
                         _missing(None, f'{_key!r} attribute must be boolean')
@@ -787,7 +827,7 @@ class DataLoader(DynamicGen):
         _ext_path = self.ext_path = self._validate_path(self.ext_path, verbose=self._verbose)
         
         if _ext_path.is_file() and not _ext_path.is_dir():
-            self.files =  self.load_file(_ext_path, **self.kwargs)
+            self.files =  self.load_file(_ext_path, **kwargs)
             return self.__call__(self.files)
         
         self.defaults = self._validate_exts(self.defaults)
@@ -799,19 +839,19 @@ class DataLoader(DynamicGen):
         _missing(None)
     
     def __repr__(self):
-        return self._repr(self.__call__(), module=DataLoader.__name__)
+        return self._repr(self.__call__(), module=DataLoader.__name__, display_all=self._full_repr)
     
     __str__ = __repr__
     
     def __call__(self, __other=None):
         _files = __other or self.files
         if not _files:
-            super(DynamicGen, self).__missing__(0)
+            self.__missing__(0, '')
         
         if all((self._dynamic,
                 not isinstance(_files, DynamicDict))):
             
-            return DynamicDict(_files)
+            return DynamicDict(_files, full_repr=self._full_repr)
         
         elif self._manage_data:
             return self.manage_data()
@@ -820,10 +860,10 @@ class DataLoader(DynamicGen):
             return DynamicDict.Benedict(_files)
         
         elif self._generator \
-            or (hasattr(_files, '__next__') 
+            and (hasattr(_files, '__next__') 
                 and callable(getattr(_files, '__next__'))):
             
-            return DynamicGen(_files)
+            return DynamicGen(_files, self._full_repr)
         
         return self
     
@@ -938,8 +978,8 @@ class DataLoader(DynamicGen):
         _type = next(self._get_type(_gen_files))
         
         if self._dynamic and _type==DynamicDict:
-            self.files = DynamicDict(self.files)
-            self.files.update(DynamicDict(_gen_files))
+            self.files = DynamicDict(self.files, full_repr=self._full_repr)
+            self.files.update(DynamicDict(_gen_files, full_repr=self._full_repr))
             return self.__call__(self.files)
         
         self.files = chain(((k,v) for k,v in self.files), _gen_files)
@@ -957,14 +997,12 @@ class DataLoader(DynamicGen):
     def _load_file(cls, __path, __method, __kwargs):
         _p_name = '/'.join(__path.parts[-2:])
         p_contents = None
-        _org_kwargs = deepcopy(__kwargs)
-        _kwargs = cls.kwargs if hasattr(cls, 'kwargs') else _org_kwargs
-        _org_get = _kwargs.get
-        _verbose = _org_get('verbose')
-        _allow_empty = _org_get('allow_empty_files')
-        _method = open if _org_get('no_method') else __method
-        cls._rm_cls_kwargs(_org_kwargs)
-        
+        _kwargs = cls.kwargs if hasattr(cls, 'kwargs') else __kwargs
+        _get = partial(_kwargs.get, False)
+        _verbose = cls._verbose if hasattr(cls, '_verbose') else _get('verbose')
+        _allow_empty = cls._allow_empty_files if hasattr(cls, '_allow_empty_files') else _get('allow_empty_files')
+        _method = open if (hasattr(cls, '_no_method') and getattr(cls, '_no_method') is True) and not _get('no_method') else __method
+        cls._rm_cls_kwargs(_kwargs)
         with cls._TIMER(message=f'Executing {_p_name!r}', verbose=_verbose):
             try:
                 p_contents = _method(__path, **{})
@@ -999,17 +1037,20 @@ class DataLoader(DynamicGen):
                 if not cls.check_hash(__path):
                     raise DLoaderException(270, f'{t_error}')
             
-            return cls._check_empty(_path, p_contents, allow_empty=_allow_empty)
+            return cls._check_empty(_path, p_contents, allow_empty=_allow_empty, verbose=_verbose)
     
     @classmethod
-    def _check_empty(cls, *args, allow_empty=False):
+    def _check_empty(cls, *args, **kwargs):
         _p, _contents = args
-        PathInfo = _Generic.create_subclass('PosInfo', ('path_', 'contents_'))
+        _allow_empty = kwargs.setdefault('allow_empty', False)
+        _verbose = kwargs.setdefault('verbose', False)
         
+        PathInfo = _Generic.create_subclass('PosInfo', ('path_', 'contents_'))
         _PI = partial(PathInfo, path_=_p)
         _hattr = lambda __name: hasattr(_contents, __name)
-        
-        _is_empty = (
+        _is_empty = False
+        try:
+            _is_empty = (
                     (_hattr('empty') and _contents.empty) or
                     (_hattr('read') and not _contents.read().strip()) or
                     (_hattr('strip') and _hattr('__str__') and not _contents.strip()) or
@@ -1023,18 +1064,16 @@ class DataLoader(DynamicGen):
                     (_hattr('seek') and (_contents.seek(0, os.SEEK_END), _contents.tell() == 0)) or
                     (_hattr('geturl') and not _contents.geturl())
                 )
+        except tuple(cls._all_errors()) as dl_error:
+            if _verbose:
+                DLoaderException(None,
+                                f'>>ERROR on {DataLoader.__name__}.{DataLoader._check_empty.__name__!r}:\n{dl_error}')
+            _is_empty = True
         
-        if _is_empty and not allow_empty:
+        if _is_empty and not _allow_empty:
             return _PI()
         
         return _PI(contents_=_contents)
-    
-    def _print_header(self):
-        _max_workers = self._dl_initializer(max_workers_only=True)
-        _string = f'(DL){self.__class__.__name__} MAXWORKERS={_max_workers}'
-        _terminal_size = self._terminal_size().columns
-        _prefix = _string.center(_terminal_size, '-')
-        print(f'\033[1;32m{_prefix}\033[0m')
     
     @cache
     def _execute_path(self):
@@ -1065,32 +1104,22 @@ class DataLoader(DynamicGen):
         
         if _files is None:
             _files, _gen = tee(self._execute_path())
-            _stems_allowed = all((not self._posix, self.compare_posix(_files)))
-        
-        if _stems_allowed:
-            return ((Path(k).stem, v) for k,v in _gen)
+        #     _stems_allowed = all((not self._posix, not self._manage_data, self.compare_posix(_files)))
+        # if _stems_allowed:
+        #     return ((Path(k).stem, v) for k,v in _gen)
         return _gen
     
     @classmethod
-    def compare_posix(cls, *args):
-        unpacker = lambda _x: (k for k,_v in _x) if hasattr(_x, '__iter__') else (k for k in _x)
+    def _stems_allowed(cls, __paths):
         _stem_converter = lambda _p: Path(_p).stem
-        _args = list(_stem_converter(i) for i in next(map(unpacker, args)))
-        
-        _dl_error = partial(DLoaderException, 170)
         _check_diffs = lambda _set1, _set2: len(_set1)==len(_set2)
+        try:
+            _keys = list(zip(*__paths))[0]
+            _args = list(map(_stem_converter, _keys))
+        except:
+            raise DLoaderException(170, f'{DataLoader._stems_allowed.__name__!r}')
         
-        if not 1<=len(args)<=2:
-            raise _dl_error(f'The number of arguments passed as sets must be 1<=x<=2')
-            
-        _compared = set(_stem_converter(i) for i in _args)
-        
-        if not _check_diffs(_args, _compared):
-            return False
-            # _error = f'{repr('posix')} attribute must be passed in.' if cls.__name__==DataLoader.__name__ else ''
-            # DLoaderException(228, _error)
-            # return False
-        return True
+        return _check_diffs(_args, set(_args))
     
     @staticmethod
     def calculate_hash(__file_path):
@@ -1163,13 +1192,14 @@ class DataLoader(DynamicGen):
             raise DLoaderException(220)
         
         _org_kwargs = deepcopy(__kwargs)
-        _verbose = _org_kwargs.get('verbose')
+        _verbose = __kwargs.pop('verbose', False)
         _directories = map(partial(cls._validate_path, verbose=_verbose), __dirs)
         _dynamic = __kwargs.pop('dynamic', False)
         _merge = __kwargs.pop('merge', False)
         _defaults = __kwargs.pop('defaults', None)
-        _all = __kwargs.pop('_all_exts', False)
+        _all = __kwargs.pop('all_exts', False)
         _gen_only = __kwargs.pop('generator', False)
+        
         _posix = cls._posix_converter
         _THREAD_AND_LOCK = DynamicThread()
         if _merge:
@@ -1188,7 +1218,7 @@ class DataLoader(DynamicGen):
         
         
         with _THREAD_AND_LOCK as _threading:
-            loaded_directories = _threading[1].map(partial(cls, defaults=_defaults, all_=_all, **_org_kwargs), _directories)
+            loaded_directories = _threading[1].map(partial(cls, defaults=_defaults, all_exts=_all, verbose=_verbose, **_org_kwargs), _directories)
         
         __files = ((_posix(__cls.ext_path, __kwargs), __cls.files) for __cls in loaded_directories)
         
@@ -1199,9 +1229,9 @@ class DataLoader(DynamicGen):
         return __files
     
     def manage_data(self):
-        if isinstance(self.files, (dict, DynamicDict)):
-            return DataManager(self.files)
-        raise self.__missing__(None, 'Dictionary with posix paths only.')
+        if not isinstance(self.files, (dict, DynamicDict)) and self._manage_data:
+            return DataManager(DynamicDict(self.files))
+        raise DLoaderException(None, f'Object must be a dictionary instance not {type(self)}. Not suitable for {DataManager.__name__}')
     
     @staticmethod
     def load_sql(__database=''):
@@ -1230,7 +1260,6 @@ class DataManager(_Generic):
         self.__post_init__()
     
     def __post_init__(self):
-        _Generic._CLASSES['DataManager'] = DataManager
         _paths = self._paths
         try:
             if isinstance(_paths, (Generator, DynamicGen)):
@@ -1334,13 +1363,15 @@ class DataManager(_Generic):
     
     def export_stats(self, __other=None):
         _stats = __other or self.all_stats
+        _exporter = self._exporter
         try:
-            self._exporter(_stats)
+            _exporter(_stats)
         except:
             _no_posix = DynamicDict({posix.stem: _v for posix, _v in _stats.items()})
-            self.export_stats(_no_posix)
-        return f'\033[34m{self.module!r}\033[0m has been successfully exported.' + \
-                (lambda _serial: '' if not _serial else f' (Serialized as {dataclass_json.__name__!r})')(self.serializer) 
+            _exporter(_no_posix)
+        finally:
+            return f'\033[34m{self.module!r}\033[0m has been successfully exported.' + \
+                (f' (Serialized as {dataclass_json.__name__!r})' if self._serializer else '')
 
 @dataclass(order=True)
 class ConfigManager:
@@ -1505,14 +1536,155 @@ def main(verbose=False):
     dm = DataManager
     ci = dl.load_config
     cii = ConfigManager
-
-    nltk = dl(f'{Path.home()}/nltk_data/corpora/stopwords', dynamic=True, all_exts=True, manage_data=False,  no_method=False, posix=True, verbose=False, module='NLTK', generator=False, dynamic_with_benedict=False)()
-    test1 = dl('/Users/yousefabuzahrieh/Desktop/test', dynamic=True, encoding='utf-8', all_exts=True, module='test1', posix=True, generator=False, verbose=False).inject_files(f'{Path.home()}/nltk_data/corpora/stopwords', module='NLTK')
-    test2 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv', 'xls', 'xlsx', 'json', 'pdf', 'txt'], dynamic=True, module='test2', posix=True, allow_empty_files=True, verbose=False, manage_data=False)()
-    test5 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv', 'xls', 'xlsx', 'json', 'pdf', 'txt'], dynamic=True, module='test2', posix=True, allow_empty_files=True, verbose=False, manage_data=False)()
-    test3 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv'], dynamic=True, module='test3', posix=True, verbose=False, allow_empty_files=False, dynamic_with_benedict=False)()
     
+    nltk = dl(f'{Path.home()}/nltk_data/corpora/stopwords', dynamic=True, all_exts=True, manage_data=False,  no_method=False, posix=False, verbose=True, module='NLTK', generator=False, dynamic_with_benedict=False, full_repr=True)()
+    test1 = dl('/Users/yousefabuzahrieh/Desktop/test', dynamic=False, encoding='utf-8', all_exts=True, module='test1', posix=True, generator=True, verbose=False).inject_files(f'{Path.home()}/nltk_data/corpora/stopwords', module='NLTK')
+    test2 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv', 'xls', 'xlsx', 'json', 'pdf', 'txt'], dynamic=True, module='test2', posix=False, allow_empty_files=True, verbose=False, manage_data=False)
+    test5 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv', 'xls', 'xlsx', 'json', 'pdf', 'txt'], dynamic=False, module='test2', posix=False, allow_empty_files=True, verbose=False, manage_data=True)()
+    test3 = dl('/Users/yousefabuzahrieh/Desktop/test', ['csv', 'xls', 'xlsx'], dynamic=True, module='test3', posix=False, verbose=False, allow_empty_files=True, dynamic_with_benedict=False)()
+    # test4 = dl('/Users/yousefabuzahrieh/Downloads/archive', ['csv'], dynamic=True, posix=True, verbose=False)()
+    # print(test4)
+    # print(dm(test4).export_stats())
+    # print(dm(nltk, posix=False)().dutch)
+    # print(dm(nltk, posix=True)().__sizeof__())
+    # print(dm(nltk, posix=False).all_stats)
+    # print(nltk.dutch)
+    # print(DynamicThread())
+    # print(test2['islamic-facts'])
+    # print(test5)
+    # print(test3)
+    # print(nltk.total_size)
+    # print(dl.compare_sets(nltk, nltk))
+    # print(test4.hashed_files)
+    # print(nltk.english)
+    # print(len(nltk))
+    # print(nltk.__sizeof__())
+    # print(benedict(nltk))
+    # print(bool(nltk))
+    # print(test2.hashed_files)
+    # print([i for i in nltk])
+    # print(test2.arabic_numbers)
+    # print(test3['islamic_facts.dcsv'])
+    # print(test2['islamic_facts.csv'])
+    # print(test2.get('islamic_facts.csvv'))
+    # print(test3)
+    # print(len(test3))
+    # print(nltk.english)
+    # print(nltk.files.get('dutch'))
+    # print(nltk['dutch'])
+    # print([i for i in nltk.reset()])
+    # print(nltk.file_stats)
+    # print(FileStats(test4))
+    # print(FileStats(nltk, serializer='dataclass_json').export_stats())
+    # print(FileStats(nltk).export_stats())
+    # print(nltk(posix=False).all_stats)
+    # print(nltk.get('englissh'))
+    # print(FileStats(nltk))
+    # print(FileStats(nltk).all_stats)
+    # print([i for i,j in nltk])
+    # print(nltk.hashed_files)
+    # print(nltk.check_hash('/Users/yousefabuzahrieh/Desktop/test/islamic_facts.csv'))
+    # print(test1.hashed_files)
+    # print(dl('/Users/yousefabuzahrieh/Desktop/test/islamic_facts.csv'))
+    # print([j for i,j in nltk.hashed_files.items()])
+    # print(nltk.hashed_files.ID_1)
+    # print(nltk.files['dutchh'])
+    # print(nltk.get('dutch'))
+    # def func():
+    #     print(nltk.english)
+        # print(len(nltk))
+        # print(nltk.get('dutch'))
+    # func()
+    # print(nltk.get('','englishh'))
+    # print(nltk.get())
+    # print(nltk.files['englishh'])
+    # print([i for i,j in test1])
+    # print(test1)
+    # print(test1.hashed_files)
+    # print(test4.__sizeof__())
+    print(nltk, test1, test2, test3, test5, sep='\n\n\n')
+    # print(_Generic.get_subclass('hello'))
+    # print(nltk)
+    # print(nltk.english)
+    # print(nltk.__sizeof__(), test1.__sizeof__(), test2.__sizeof__(), test3.__sizeof__(), sep='\n\n\n')
+    # print(dm(nltk, module='NLTK').export_stats(), dm(test1, serializer='dataclass_json').export_stats(), dm(test2).export_stats(), dm(test3).export_stats(), sep='\n\n\n')
+    # print(dl('/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/islamic_data/jsons'))
+    # print(DataManager(nltk))
+    # print(test1['Book1'])
+    # print(test1.get('Book1'))
+    # print(test2['islamic_terms.csv'])
+    # print([k for i,j in test3 for k in j if i=='stopwords'])
+    # print(test3)
+    # print([os.path.getsize(i) for i,j in nltk])
+    # print(['dutch' in nltk])
+    # print(len(test2))
+    # print(test3)
+    # print(test3['islamic_facts.csv'])
+    # print(test3['allahs_names.csv'])
+    # print(test2['all-duas'])
+    # print(test2['salah-guide'])
+    # print(test2['islamic_timeline.csv'])
+    # print(test2.get('quran_stats'))
+    # print(test1)
+    # print(cii(config_ini='db_config.ini'))
+    # print(cii(config_ini='db_config'))
+    # print(cii(config_ini='g.py'))
+    # print(cii(config_ini='db_config.ini', sections=['mysql', 'postgresql']))
+    # print(cii(config_ini='db_config.ini', sections=['ffrfr', 'mysql','postgresql', 'mysql']))
+    # print(cii(config_ini='db_config.ini', sections=['ffrfr', 'postgresql', 'mysql']))
+    # print(cii(config_ini='db_config.ini'))
+    # text = cii(config_ini='db_config.ini', _encrypt=True).config.PostgreSQL['password']
+    # print(text)
+    # a = dl.config_info(instance_only=True)
+    # print(a(config_ini='db_config.ini').config)
+    # print(cii(config_ini='sql', _sql_keys=None))
+    # print(cii(config_ini='sql_config.ini'))
+    # a = cii(config_ini='/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/sources.ini')
+    # print(a.config.Sources)
+    dirs = '/Users/yousefabuzahrieh/Desktop/test', '/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/islamic_data/jsons', \
+        f'{Path.home()}/nltk_data/corpora/stopwords', '/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/islamic_data/jsons/arabic', '/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/islamic_data/jsons/hadiths', \
+        '/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/islamic_data/jsons/salah'
+    # for i in dirs:
+    #     print(shutil.disk_usage(i)._asdict())
+    # print(_Generic.create_subclass('Extractor', module='NLTK', num_args=10, rename=True)().__module__)
+    # print(shutil.disk_usage('/Volumes/USBC')._asdict())
+    # print(a)
+    # print(dm([Path(dirs[1])], posix=False).all_stats)
+    # print(shutil.disk_usage('/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive')._asdict())
 
+    # CP = ConfigManager(config_ini='/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/sources.ini')
+    # print(CP)
+    # print(dir(nltk))
+    # print(dir(test2))
+    # print(dl.add_dirs(*dirs, defaults=['json'], all_exts=False, merge=True, dynamic=True, no_method=False, posix=False, generator=False, verbose=False))
+    # print(dl.add_dirs(*dirs, all_=True, merge=True, dynamic=False, no_method=False, posix=True, verbose=False))
+    # print(dl.add_files('/Users/yousefabuzahrieh/Desktop/test/islamic_facts.csv','/Users/yousefabuzahrieh/Desktop/test/islamic_terms.csv', dynamic=True, generator=False, verbose=False))
+    # print(ci(instance_only=True)('db_config.ini', encrypt=True).config)
+    # print(ci(config_ini='db_config.ini').config)
+    # print(cii.create_sql_config('db_config'))
+    # print(cii(config_ini='db_config.ini', encrypt=True)._update_config('MySQL', {'host': 'localhost', 'password': 'me'}))
+    # print(dl('/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/IslamAI/'))
+    # print([i for i in dl._get_params(ConfigManager._update_attrs)])
+    # print(cii(config_ini='db_config.ini', encrypt=True))
+    # print(nltk.hashed_files)
+    # print(DynamicDict({Path('ggoth.csv'): 1}).get('ggoth.csv'))
+    # print(_Generic._rm_period(frozenset(('a'))))
+    # print(_Generic._too_large(chain(i for i in [])))
+    # import constants
+    # print(constants.__repr__())
+    # print(constants.__getitem__('_PASS'))
+    # print(DataLoader._terminal_size())
+    # print(DynamicDict({'1':1}).get('1'))
+    # from datetime import datetime
+    # print(datetime.today())
+    # print(datetime.now().strftime('%Y-%m-%dT%H-%M-%S%p'))
+    # print(_Generic._cls_tuple('__Ext'))
+    # print(DataLoader.compare_posix((('corpora/stopwords.csv','1'), ('corpora/stopwords','1')), (('corpora/stopwords.csd', '2'),('corpora/stopwords', '2'))))
+    #<generator object DataLoader._execute_path.<locals>.<genexpr> at 0x11ce013c0>
+    # print(chain((1),(2)))
+    # print(DynamicDict({'a':{'b': DynamicDict({'3': {'4':'5'}})}}))
+    # print(dl('/Users/yousefabuzahrieh/Desktop/test/islamic_facts.csv'))
+    
 if (__main:=__name__) == '__main__':
     _dl_name = DataLoader.__class__.__name__
     parser = argparse.ArgumentParser(description=f'{_dl_name}: A powerful data loading utility.')
