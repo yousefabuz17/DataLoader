@@ -1,8 +1,8 @@
 <img src="logo/data-loader-logo.jpg" alt="DataLoader Logo" width="200"/>
 
 # DataLoader
-[![PyPI version](https://badge.fury.io/py/data-loader.svg)](https://badge.fury.io/py/data-loader)
-[![Downloads](https://pepy.tech/badge/data-loader)](https://pepy.tech/project/data-loader)
+[![PyPI version](https://badge.fury.io/py/dynamic-loader.svg)](https://badge.fury.io/py/dynamic-loader)
+[![Downloads](https://pepy.tech/badge/dynamic-loader)](https://pepy.tech/project/dynamic-loader)
 [![License](https://img.shields.io/badge/license-Apache-blue.svg)](https://opensource.org/license/apache-2-0/)
 [![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://github.com/yousefabuz17/DataLoader/blob/main/README.md)
 [![Code Style](https://img.shields.io/badge/code%20style-pep8-blue.svg)](https://www.python.org/dev/peps/pep-0008/)
@@ -56,7 +56,7 @@ pip install -r requirements.txt
 
 ### Install via pip
 ```sh
-pip install data-loader
+pip install dynamic-loader
 pip install -r requirements.txt
 ```
 ---
@@ -144,7 +144,7 @@ The `Extensions` class is a utility that provides a set of default file extensio
 
 ## `DataLoader` Usage
   ```py
-  from dataloader import DataLoader
+  from dynamic_loader import DataLoader
   # Load files from a single directory
   dl = DataLoader(path="path/to/directory")
   print(dl.files) # Loaded files from a single directory (returns as a generator object)
@@ -169,7 +169,7 @@ The `Extensions` class is a utility that provides a set of default file extensio
 
 ## `DataMetrics` Usage
   ```py
-  from dataloader import DataMetrics
+  from dynamic_loader import DataMetrics
   # Retrieve statistics for all paths
   dm = DataMetrics(files=["path/to/directory1", "path/to/directory2"])
   print(dm.all_stats) # Retrieve statistics for all paths
@@ -182,7 +182,7 @@ The `Extensions` class is a utility that provides a set of default file extensio
 
 ## `Extensions` Usage
   ```py
-  from dataloader import Extensions
+  from dynamic_loader import Extensions
   ALL_EXTS = Extensions() # Initializes the Extensions class or use the default instance Extensions().ALL_EXTS
   print("csv" in ALL_EXTS) # True
   print(ALL_EXTS.get_loader("csv")) # <function read_csv at 0x7f8e3e3e3d30>
