@@ -1,3 +1,5 @@
+__all__ = "OTHER_EXTS"
+
 OTHER_EXTS = frozenset(
     (
         "7z",

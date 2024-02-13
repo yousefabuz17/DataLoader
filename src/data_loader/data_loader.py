@@ -621,7 +621,7 @@ class DataLoader(_BaseLoader):
         try:
             org_exts = set(cls._rm_period(e) for e in extensions)
             valid_exts = set(e for e in org_exts if e in cls.ALL_EXTS)
-            failed_exts = set(filter(lambda ext: ext not in valid_exts, extensions))
+            failed_exts = set(filter(lambda ext: cls._rm_period(ext) not in valid_exts, extensions))
         except Exception:
             raise Exception
         if failed_exts == org_exts:
