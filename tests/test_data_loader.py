@@ -168,7 +168,15 @@ def test_default_extensions():
 # ?> ===============================================================================
 
 
-@pytest.fixture(params=[(("fake/path/1", "fake/path/2"), "32", (dm_paths := get_files(path=TEST_FILES, generator=False)))])
+@pytest.fixture(
+    params=[
+        (
+            ("fake/path/1", "fake/path/2"),
+            "32",
+            (dm_paths := get_files(path=TEST_FILES, generator=False)),
+        )
+    ]
+)
 def test_datametrics_fake_params(request):
     return request.param
 
@@ -198,11 +206,11 @@ def test_datametrics_class():
         ),
     )
     d_dir_metrics_posix = DataMetrics(files=dir_files, full_posix=True)
-    
+
     def test_len(data, length):
-        assert len(list(data.all_stats)) == length 
-        assert data.total_files == length 
-    
+        assert len(list(data.all_stats)) == length
+        assert data.total_files == length
+
     def validate_tuple(d_tuple):
         assert hasattr(d_tuple, "__module__") and d_tuple.__module__ == "StatsTuple"
 

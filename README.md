@@ -31,6 +31,7 @@
   - [DataLoader Usage](#dataloader-usage)
   - [DataMetrics Usage](#datametrics-usage)
   - [Extensions Usage](#extensions-usage)
+- [Output Example](#output-example)
 - [Feedback](#feedback)
   - [Contact Information](#contact-information)
 
@@ -191,6 +192,30 @@ The `Extensions` class is a utility that provides a set of default file extensio
   print(ALL_EXTS.has_loader("docx")) # False
   print(ALL_EXTS.is_supported("docx")) # True
   ```
+---
+
+# Output Example
+```py
+DataLoader((all-duas.json, <Dict>),
+           (ara_eng.txt, <Str>),
+           (milestones.pdf, <ExtractPages>),
+           (islamic_facts.csv, <DataFrame>),
+           (SOURCES.md, <TextIOWrapper>),
+           (islam-laws.docx, <Open>),
+           (db_config.ini, <ConfigParser>),
+           (allahs_names.csv, <DataFrame>),
+           (The Road to Peace and Salvation.html, <Open>),
+           (arabic_numbers.csv, <DataFrame>),
+           (all-surah-meanings.json, <Dict>)
+)
+
+DataMetrics((path/to/directory1,    <Dict>),
+            (path/to/directory2, <Dict>)
+)
+DataMetrics[path/to/directory1] -> {**os_stats_results, 
+'st_fsize': Stats(symbolic='6.20 KB', calculated_size=6.19921875, bytes_size=6348), 'st_vsize': {'total': Stats(symbolic='465.63 GB (Gigabytes)', calculated_size=465.62699127197266, bytes_size=499963174912), 'used': Stats(symbolic='131.60 GB (Gigabytes)', calculated_size=131.59552001953125, bytes_size=141299613696), 'free': Stats(symbolic='334.03 GB (Gigabytes)', calculated_size=334.0314712524414, bytes_size=358663561216)}}
+```
+
 ---
 
 # Feedback

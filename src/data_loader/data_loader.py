@@ -44,7 +44,7 @@ The main components include the `DataLoader` class, responsible for loading file
 - The `data_loader.py` module contains additional utility classes and functions for file handling.
 """
 
-import asyncio
+
 import inspect
 import json
 import logging
@@ -406,7 +406,9 @@ class _SpecialGenRepr(Iterable):
 
     __str__ = __repr__
 
+
 from typing import overload
+
 
 @dataclass(slots=True, weakref_slot=True)
 class Extensions:
@@ -435,6 +437,7 @@ class Extensions:
             args = map(self.rm_period, args)
             m = method(self, *args, **kwargs)
             return m
+
         return wrappper
 
     @period_remover
@@ -489,7 +492,7 @@ class Extensions:
 
     def get_loader(self, ext: str):
         return self[ext]
-    
+
     def is_supported(self, ext: str) -> bool:
         return ext in self
 
@@ -841,7 +844,7 @@ class DataMetrics(_BaseLoader):
     @cached_property
     def total_size(self):
         return self.__sizeof__()
-    
+
     @cached_property
     def total_files(self):
         if not self._total_files:
@@ -871,27 +874,3 @@ __all__ = (
     "_SpecialDictRepr",
     "_SpecialGenRepr",
 )
-
-
-def main():
-    a = DataLoader(
-        directories=(
-            "/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/DataLoader/tests/test_files",
-            "/Users/yousefabuzahrieh/nltk_data/corpora/stopwords",
-        ),
-        default_extensions=[".csv"],
-        full_posix=True,
-        generator=False,
-        no_method=False,
-    ).dir_files
-    print(a)
-    # print(DataMetrics(paths=a, full_posix=False).total_files)
-    # print([Path(p).is_absolute() for p in a])
-    # print(Extensions().csv)
-    # print(Extensions().get_loader("csv"))
-    print(Extensions().is_supported("csv"))
-    # print(type(a.dir_files))
-    # print(DataLoader._import(package="Iterable"))
-
-
-main()
