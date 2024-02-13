@@ -2,12 +2,12 @@
 # DataLoader Project
 
 ## Overview:
-This project provides utility classes and functions for dynamic loading and management of data from specified directories.
+This project provides utility classes and functions for dynamic loading and processing of data from specified directories.
 The main components include the `DataLoader` class, responsible for loading files from directories, and the `DataMetrics` class, which gathers and exports OS statistics for specified paths.
 
 ## Classes:
 1. `DataLoader`:
-    - Main class for dynamically loading and managing data.
+    - Main class for dynamically loading and processing data.
     - Args:
         - `path` (str or Path): Path of the directory to load files.
         - `directories` (Iterable): Additional directories to merge with the specified path.
@@ -21,13 +21,15 @@ The main components include the `DataLoader` class, responsible for loading file
         - `load_file`: Load a single file.
         - `get_files`: Class method to get files from a directory based on default extensions.
         - `dir_files` (property): Load files from specified directories.
-        - `files` (property): Get loaded files with optional generator behavior.
+        - `files` (property): Load files from specified path.
 
 2. `DataMetrics`:
     - Class for gathering and exporting OS stats for specified paths.
     - Args:
         - `paths` (Iterable): Paths for which to gather statistics.
         - `full_posix` (bool): Display full POSIX paths.
+        - `file_name` (str): The file name to be used when exporting all files metadata stats.
+        - `total_workers` (int): Number of workers for parallel execution.
     - Methods:
         - `export_stats()`: Export gathered statistics to a JSON file.
         - `all_stats`: Get all gathered statistics.
@@ -42,6 +44,7 @@ The main components include the `DataLoader` class, responsible for loading file
 - The `data_loader.py` module contains additional utility classes and functions for file handling.
 """
 
+import asyncio
 import inspect
 import json
 import logging
@@ -50,18 +53,21 @@ import os
 import pickle
 import re
 import shutil
+import importlib
 from collections import namedtuple
 from configparser import ConfigParser
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields
-from functools import cache, cached_property, partial
+from functools import cache, cached_property, partial, wraps
 from itertools import chain
 from logging import Logger
 from pathlib import Path
 from reprlib import recursive_repr
 from time import time
-from typing import Any, Generator, Iterable, Iterator, NamedTuple, TextIO, Union
+from io import TextIOWrapper
+from typing import Any, Generator, Iterable, Iterator, NamedTuple, Union
 
+import aiofiles
 import numpy as np
 import pandas as pd
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
@@ -154,7 +160,7 @@ class _BaseLoader:
         else:
             raise DLoaderException(
                 f"The value for 'k' is not a valid type."
-                f"\nk value and type: ({k, type(k)})"
+                f"\nk value and type: ({k =}, {type(k) =})"
             )
 
         defaults_ = map(re.escape, map(str, defaults))
@@ -169,6 +175,10 @@ class _BaseLoader:
         else:
             compiled = compiler.search(esc_k)
         return compiled
+
+    @staticmethod
+    def _import(module_name="typing", *, package="Any"):
+        return getattr(importlib.import_module(module_name), package)
 
     @classmethod
     def _cap_cls_name(cls, cls_value):
@@ -209,7 +219,7 @@ class _BaseLoader:
                 org_length >= max_len,
                 isinstance(value, Generator),
                 isinstance(value, ConfigParser),
-                isinstance(value, TextIO),
+                isinstance(value, TextIOWrapper),
                 isinstance(value, (pd.DataFrame, pd.Series)),
                 type(value) == type,
             )
@@ -231,18 +241,18 @@ class _BaseLoader:
             raise DLoaderException(t_error)
 
         if not fp:
-            raise DLoaderException(f"File arugment must not be empty: {fp!r}")
+            raise DLoaderException(f"File arugment must not be empty: {fp =!r}")
         elif not fp.exists():
             raise DLoaderException(
-                f"File does not exist: {fp!r}. Please check system files."
+                f"File does not exist: {fp =!r}. Please check system files."
             )
         elif all((not fp.is_file(), not fp.is_absolute())):
             raise DLoaderException(
-                f"Invalid path type: {fp!r}. Path must be a file type."
+                f"Invalid path type: {fp =!r}. Path must be a file type."
             )
         elif directory and fp.is_dir():
             raise DLoaderException(
-                f"File is a directory: {fp!r}. Argument must be a valid file."
+                f"File is a directory: {fp =!r}. Argument must be a valid file."
             )
         elif any(
             (
@@ -251,7 +261,7 @@ class _BaseLoader:
             )
         ):
             if verbose:
-                DLoaderException(f"Skipping {fp.name!r}", log_method=logger.warning)
+                DLoaderException(f"Skipping {fp.name =!r}", log_method=logger.warning)
             return
         return fp
 
@@ -292,6 +302,15 @@ class _BaseLoader:
         c = ConfigParser()
         c.read(file)
         return c
+
+    @staticmethod
+    def _check_workers(workers):
+        if not workers or isinstance(workers, (int, float)):
+            return workers
+        raise DLoaderException(
+            f"The 'total_workers' parameter must be of type {int!r} or {float!r}"
+            f"\n>>>Workers Input: {workers =!r}"
+        )
 
     @classmethod
     def _create_subclass(
@@ -342,17 +361,19 @@ class _BaseLoader:
 
 class _SpecialDictRepr(dict):
     def __init__(self, *args, **kwargs):
+        module = kwargs.pop("module", DataLoader._cap_cls_name(dict))
         super().__init__(*args, **kwargs)
+        self._module = module
 
     @recursive_repr()
     def __repr__(self) -> str:
-        dl_name = "DataLoader"
-        p_holder, spacing = "({}, {})", f",\n{' ':>{len(dl_name)+1}}"
+        cls_name = self._module
+        p_holder, spacing = "({}, {})", f",\n{' ':>{len(cls_name)+1}}"
         too_large = lambda val: _BaseLoader._too_large(
             val, tag=self._check_length(self.values())
         )
         repr_items = (p_holder.format(k, too_large(v)) for k, v in self.items())
-        return f"{dl_name}({spacing.join(repr_items)})"
+        return f"{cls_name}({spacing.join(repr_items)})"
 
     __str__ = __repr__
 
@@ -364,23 +385,28 @@ class _SpecialDictRepr(dict):
 
 
 class _SpecialGenRepr(Iterable):
-    __slots__ = ("__weakrefs__", "_gen", "_id")
+    __slots__ = ("__weakrefs__", "_id", "_gen", "_module", "_gen_id")
 
-    def __init__(self, gen) -> None:
+    def __init__(self, gen, module=None) -> None:
+        self._id = hex(id(self))
         self._gen = gen
-        self._id = hex(id(self._gen))
+        self._module = module or Iterable.__name__
+        self._gen_id = hex(id(self._gen))
 
     def __iter__(self) -> Iterator:
         return iter(self._gen)
 
     @recursive_repr()
     def __repr__(self) -> str:
-        return (
-            f"<generator object {DataLoader.__name__}.files.<key-value> at {self._id}>"
-        )
+        if self._module == DataLoader.__name__:
+            return (
+                f"<generator object {self._module}.files.<key-value> at {self._gen_id}>"
+            )
+        return f"<{self.__class__.__module__}.{self._module} object at {self._id}>"
 
     __str__ = __repr__
 
+from typing import overload
 
 @dataclass(slots=True, weakref_slot=True)
 class Extensions:
@@ -390,11 +416,11 @@ class Extensions:
     def __post_init__(self):
         other_exts = set(
             self._EXT_TUPLE(ext, self._method_matcher(ext))
-            for ext in self.get_other_extensions()
+            for ext in self._other_extensions()
         )
-        defaults = {e: v for e, v in self.defaults().items()}
+        defaults = {e: v for e, v in self._defaults().items()}
         self.ALL_EXTS = {
-            **{ext.suffix_: ext.loader_ for ext in other_exts},
+            **{ext.suffix_: ext for ext in other_exts},
             **defaults,
         }
 
@@ -403,8 +429,24 @@ class Extensions:
 
     __str__ = __repr__
 
-    def __contains__(self, __ext):
+    def period_remover(method):
+        @wraps(method)
+        def wrappper(self, *args, **kwargs):
+            args = map(self.rm_period, args)
+            m = method(self, *args, **kwargs)
+            return m
+        return wrappper
+
+    @period_remover
+    def __contains__(self, __ext: str):
         return __ext in self.ALL_EXTS
+
+    @period_remover
+    def __getitem__(self, __key: str):
+        return self.ALL_EXTS[__key]
+
+    def __getattr__(self, __name: str) -> Any:
+        return self[__name]
 
     def __getstate__(self):
         return {
@@ -413,9 +455,13 @@ class Extensions:
             if i.name in ("DEFAULT_EXTS", "ALL_EXTS")
         }
 
-    def get_other_extensions(self):
+    @classmethod
+    def rm_period(cls, ext, string=True):
+        return _BaseLoader._rm_period(ext, string=string)
+
+    def _other_extensions(self):
         other_exts = chain.from_iterable((mimetypes.types_map.keys(), OTHER_EXTS))
-        return {_BaseLoader._rm_period(k): None for k in other_exts}
+        return {self.rm_period(k): None for k in other_exts}
 
     def _method_matcher(self, ext):
         return (
@@ -426,7 +472,7 @@ class Extensions:
             else open
         )
 
-    def defaults(self):
+    def _defaults(self):
         return {
             "csv": self._EXT_TUPLE("csv", pd.read_csv),
             "hdf": self._EXT_TUPLE("hdf", pd.read_hdf),
@@ -440,6 +486,15 @@ class Extensions:
             "txt": self._EXT_TUPLE("txt", lambda path: open(path).read()),
             "empty": self._EXT_TUPLE("", lambda path: open(path).read()),
         }
+
+    def get_loader(self, ext: str):
+        return self[ext]
+    
+    def is_supported(self, ext: str) -> bool:
+        return ext in self
+
+    def has_loader(self, ext: str) -> bool:
+        return self.get_loader(ext) is not open
 
 
 class DataLoader(_BaseLoader):
@@ -481,14 +536,14 @@ class DataLoader(_BaseLoader):
         "_total_workers",
     )
 
-    ALL_EXTS = Extensions().ALL_EXTS
+    ALL_EXTS = Extensions()
 
     def __init__(
         self,
         path=None,
         directories=None,
         default_extensions=None,
-        full_posix=False,
+        full_posix=True,
         no_method=False,
         verbose=False,
         generator=True,
@@ -505,14 +560,6 @@ class DataLoader(_BaseLoader):
         self._files = None
         self._dir_files = None
 
-    @staticmethod
-    def _check_workers(workers):
-        if not workers or isinstance(workers, (int, float)):
-            return workers
-        raise DLoaderException(
-            f"The 'total_workers' parameter must be of type {int!r} or {float!r}"
-        )
-
     @classmethod
     def _ext_method(cls, fp):
         if not isinstance(fp, Path):
@@ -526,7 +573,7 @@ class DataLoader(_BaseLoader):
                 loading_method = cls.ALL_EXTS[suffix].loader_
             except AttributeError:
                 DLoaderException(
-                    f"ExtensionTypeError>>Check file {fp!r} extensions. Failed to find a relative working loading method ({loading_method!r}). Defaulting to {open!r}",
+                    f"ExtensionTypeError>>Check file {fp =!r} extensions. Failed to find a relative working loading method ({loading_method =!r}). Defaulting to {open!r}",
                     log_method=logger.warning,
                 )
         return loading_method
@@ -540,8 +587,16 @@ class DataLoader(_BaseLoader):
         )
 
     @classmethod
-    def load_file(cls, file_path):
-        return cls()._load_file(cls._validate_file(file_path))
+    def load_file(cls, fp_or_dir):
+        return cls()._load_file(cls._validate_file(fp_or_dir))
+
+    @classmethod
+    def _path_files(cls, directory, startswith=""):
+        return [
+            p
+            for p in Path(directory).iterdir()
+            if p.name.startswith(startswith) and cls._validate_file(p)
+        ]
 
     @classmethod
     def get_files(cls, directory, defaults=None, verbose=False):
@@ -561,7 +616,7 @@ class DataLoader(_BaseLoader):
             return
 
         try:
-            org_exts = set(extensions)
+            org_exts = set(cls._rm_period(e) for e in extensions)
             valid_exts = set(e for e in org_exts if e in cls.ALL_EXTS)
             failed_exts = set(filter(lambda ext: ext not in valid_exts, extensions))
         except Exception:
@@ -572,7 +627,7 @@ class DataLoader(_BaseLoader):
             )
         if failed_exts:
             DLoaderException(
-                f"ExtensionsError>>Skipping invalid extensions: {failed_exts!r}",
+                f"ExtensionsError>>Skipping invalid extensions: {failed_exts =!r}",
                 log_method=logger.warning,
             )
         return valid_exts
@@ -644,8 +699,11 @@ class DataLoader(_BaseLoader):
 
     @cache
     def _repr_files(self, files):
+        module = self.__class__.__name__
         return (
-            _SpecialDictRepr(files) if not self._generator else _SpecialGenRepr(files)
+            _SpecialDictRepr(files, module=module)
+            if not self._generator
+            else _SpecialGenRepr(files, module=module)
         )
 
 
@@ -655,34 +713,36 @@ class DataMetrics(_BaseLoader):
 
     #### Args:
         - `paths` (Iterable): Paths for which to gather statistics.
-        - `file_name` (str): The file name to be used when exporting all file metadata stats.
+        - `file_name` (str): The file name to be used when exporting all files metadata stats.
         - `full_posix` (bool): Indicates whether to display full POSIX paths.
 
     #### Methods:
         - `export_stats()`: Export gathered statistics to a JSON file.
         - `all_stats` (property): Get all gathered statistics as a dictionary.
         - `total_size` (property): Retrieve the total size of all specified paths.
-
-    #### Note:
-        - The DataMetrics class inherits from the _BaseLoader class, which provides common utility functions and features.
     """
 
     __slots__ = (
         "__weakrefs__",
-        "_paths",
+        "_files",
         "_file_name",
         "_full_posix",
+        "_total_workers",
         "_all_stats",
     )
 
-    def __init__(self, paths, file_name=None, full_posix=False) -> None:
-        self._paths = self._validate_paths(paths)
+    def __init__(
+        self, files, file_name=None, full_posix=False, total_workers=None
+    ) -> None:
+        self._files = self._validate_paths(files)
         self._file_name = file_name
         self._full_posix = full_posix
+        self._total_workers = self._check_workers(total_workers)
         self._all_stats = None
+        self._total_files = 0
 
     def __iter__(self):
-        return iter(self._paths)
+        return iter(self._files)
 
     def __sizeof__(self) -> int:
         total_bytes = sum(
@@ -699,7 +759,7 @@ class DataMetrics(_BaseLoader):
     def _get_stats(self):
         return {
             p.name if not self._full_posix else p.as_posix(): self._os_stats(p)
-            for p in self._paths
+            for p in self._files
         }
 
     @classmethod
@@ -742,6 +802,7 @@ class DataMetrics(_BaseLoader):
             "Stats",
             ("symbolic", "calculated_size", "bytes_size"),
             field_doc="Primary NamedTuple containing OS stats results for specified paths.",
+            module="StatsTuple",
         )
 
     @classmethod
@@ -775,11 +836,17 @@ class DataMetrics(_BaseLoader):
     def all_stats(self):
         if self._all_stats is None:
             self._all_stats = self._get_stats()
-        return _SpecialDictRepr(self._all_stats)
+        return _SpecialDictRepr(self._all_stats, module=self.__class__.__name__)
 
     @cached_property
     def total_size(self):
         return self.__sizeof__()
+    
+    @cached_property
+    def total_files(self):
+        if not self._total_files:
+            self._total_files = len(list(self.all_stats))
+        return self._total_files
 
 
 # XXX Metadata Information
@@ -800,14 +867,31 @@ __all__ = (
     "DataLoader",
     "DataMetrics",
     "DLoaderException",
+    "Extensions",
     "_SpecialDictRepr",
     "_SpecialGenRepr",
 )
+
+
 def main():
-    a = DataLoader(directories=(
-        "/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/DataLoader/tests/test_files",
-        "/Users/yousefabuzahrieh/nltk_data/corpora/stopwords",
-    ),
-    generator=False)
-    print(a.dir_files)
-# main()
+    a = DataLoader(
+        directories=(
+            "/Users/yousefabuzahrieh/Library/CloudStorage/GoogleDrive-yousef.abuzahrieh@gmail.com/My Drive/Python/Projects/DataLoader/tests/test_files",
+            "/Users/yousefabuzahrieh/nltk_data/corpora/stopwords",
+        ),
+        default_extensions=[".csv"],
+        full_posix=True,
+        generator=False,
+        no_method=False,
+    ).dir_files
+    print(a)
+    # print(DataMetrics(paths=a, full_posix=False).total_files)
+    # print([Path(p).is_absolute() for p in a])
+    # print(Extensions().csv)
+    # print(Extensions().get_loader("csv"))
+    print(Extensions().is_supported("csv"))
+    # print(type(a.dir_files))
+    # print(DataLoader._import(package="Iterable"))
+
+
+main()

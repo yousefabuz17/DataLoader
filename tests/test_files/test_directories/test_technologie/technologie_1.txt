@@ -1,0 +1,25 @@
+The Arizona Attorney General (AG) Mark Brnovich has filed a consumer fraud lawsuit against Google, alleging that the company used “deceptive” practices to track the location of users even after they turned off location tracking.
+
+Brnovich shared information about the lawsuit on his Twitter account. He accused Google of using “deceptive and unfair practices to obtain users’ location data”. This data is exploited for advertising, which accounts for more than 80 per cent of Google’s revenue.
+
+Google collects detailed information about its users, including their physical locations, to target users for advertising. Often, this is done without the users’ consent or knowledge.
+
+Brnovich wrote on Twitter: “Google collects detailed information about its users, including their physical locations, to target users for advertising. Often, this is done without the users’ consent or knowledge.”
+
+He told the Washington Post that Google has been trying to find “misleading ways” to obtain information from users who try to opt out of data collection. He added that Google may be the “most innovative company in the world” but it is not above the law.
+
+His office’s investigation of Google was initiated after reading a 2018 Associated Press report, which detailed how Google users are “lulled into a false sense of security” by privacy options, including the option to disable location history. The investigation found that many Google services on Android devices (and also iPhones) store location data even if the user selects privacy settings which purport to prevent Google from doing so.
+
+The findings were confirmed by computer scientists at Princeton University.
+
+The lawsuit specifically alleges that Google maintained location tracking for certain features, including weather and search engine queries, after the user disabled app-specific location tracking. Only when the user turns off broader system-level tracking did Google stop tracking location.
+
+“We brought forward this action to put a stop to Google’s deceptive collection of user data, obtain monetary relief and require Google to disgorge gross receipts arising from its Arizona activities,” Brnovich added in another tweet.
+
+He has asked for the courts to force Google to pay back any profits it may have earned by exploiting data fraudulently acquired from Arizonans. The Washington Post posits that Arizona’s state fraud laws may also allow for a $10,000 fine per violation.
+
+Brnovich’s action comes on the heels of a lawsuit from New Mexico AG Hector Balderas, who sued Google for allegedly collecting children’s data without required parental consent - a possible violation of the Children’s Online Privacy Protection Act (COPPA) 1998. According to the lawsuit, Google harvested data (including YouTube activity, voice recordings, physical locations, browser activity, and contacts) from free Chromebooks provided to schools through the G Suite for Education platform and then used this data for personalised advertising, up until April 2014. Balderas had previously sued Google and other companies for violating COPPA in 2018.
+
+Although Google has made some compromises in recent years, such as making it easier to delete location data, it remains the target of lawmakers and activists for the aggressive data-harvesting practices on which its business model relies. Google and other US tech giants are facing a number of major regulatory and legal challenges around the world, mostly relating to antitrust and privacy.
+
+Google said in a statement to media: “The [AG] and the contingency fee lawyers filing this lawsuit appear to have mischaracterised our services. We have always built privacy features into our products and provided robust controls for location data. We look forward to setting the record straight”
