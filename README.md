@@ -42,7 +42,7 @@
 - #### **`pytest`**: ~=7.4.3
 - #### **`setuptools`**: ~=68.2.2
 - #### **`pandas`**: ~=2.2.0
-> *This project mandates the use of `Python 3.10` or later versions. Compatibility issues have been identified with `Python 3.9` due to the utilization of the `kw_only` parameter in dataclasses, a critical component for the project. It is important to note that the project may undergo a more stringent backward compatibility structure in the near future.*
+> *This project mandates the use of `Python 3.7` or later versions. Compatibility issues have been identified with the use for dataclasses in `Python 3.6` and earlier versions.*
 
 # Getting Started
 

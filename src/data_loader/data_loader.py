@@ -66,7 +66,7 @@ from logging import Logger
 from pathlib import Path
 from reprlib import recursive_repr
 from time import time
-from typing import Any, Generator, Iterable, Iterator, NamedTuple, Union
+from typing import Any, Generator, Iterable, Iterator, NamedTuple, TypeVar, Union
 
 import pandas as pd
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
@@ -74,6 +74,9 @@ from json.decoder import JSONDecodeError
 
 sys.path.append((Path(__file__).parent).as_posix())
 from other_extensions import OTHER_EXTS
+
+P = TypeVar("P", str, Path)
+I = TypeVar("I", int, float)
 
 
 def get_logger(
@@ -124,7 +127,7 @@ class DLoaderException(BaseException):
         self.log_method(*args)
 
 
-@dataclass(slots=True, weakref_slot=True)
+@dataclass
 class Timer:
     message: str = field(default="")
     verbose: bool = field(default=False)
@@ -208,7 +211,7 @@ class _BaseLoader:
         return c_name
 
     @classmethod
-    def _exporter(cls, file: str | Path, data: Any):
+    def _exporter(cls, file: P, data: Any):
         fp = Path(file).with_suffix(".json")
         with open(fp, mode="w") as metadata:
             json.dump(data, metadata, indent=4)
@@ -320,7 +323,7 @@ class _BaseLoader:
         return c
 
     @staticmethod
-    def _check_workers(workers: int | float):
+    def _check_workers(workers: I):
         if not workers or isinstance(workers, (int, float)):
             return workers
         raise DLoaderException(
@@ -423,7 +426,7 @@ class _SpecialGenRepr(Iterable):
     __str__ = __repr__
 
 
-@dataclass(slots=True, weakref_slot=True)
+@dataclass
 class Extensions:
     _ALL_EXTS: dict = field(init=False, default=None)
 
@@ -571,14 +574,14 @@ class DataLoader(_BaseLoader):
 
     def __init__(
         self,
-        path: str | Path = None,
+        path: P = None,
         directories: Iterable = None,
         default_extensions: Iterable = None,
         full_posix: bool = True,
         no_method: bool = False,
         verbose: bool = False,
         generator: bool = True,
-        total_workers: int | float = None,
+        total_workers: I = None,
         ext_loaders: dict = None,
     ):
         self._path = path
@@ -599,7 +602,7 @@ class DataLoader(_BaseLoader):
         extensions = self.EXTENSIONS
         return extensions.customize(**{}) or extensions
 
-    def _ext_method(self, fp: str | Path):
+    def _ext_method(self, fp: P):
         fp = self._validate_file(fp)
         suffix = self._rm_period(fp.suffix)
         empty_method = self.all_exts["empty"]
@@ -626,13 +629,13 @@ class DataLoader(_BaseLoader):
         )
 
     @classmethod
-    def load_file(cls, fp_or_dir: str | Path):
+    def load_file(cls, fp_or_dir: P):
         return cls()._load_file(cls._validate_file(fp_or_dir))
 
     @classmethod
     def get_files(
         cls,
-        directory: str | Path,
+        directory: P,
         defaults: Iterable = "",
         startswith: str = "",
         verbose: bool = False,
@@ -673,7 +676,7 @@ class DataLoader(_BaseLoader):
             )
         return valid_exts
 
-    def _load_file(self, file_path: str | Path):
+    def _load_file(self, file_path: P):
         fp_name = "/".join(file_path.parts[-2:])
         loading_method = open if self._no_method else self._ext_method(file_path)
         PathInfo = self._create_subclass(
@@ -778,7 +781,7 @@ class DataMetrics(_BaseLoader):
         files: Iterable,
         file_name: str = None,
         full_posix: bool = False,
-        total_workers: int | float = None,
+        total_workers: I = None,
     ) -> None:
         self._files = self._validate_paths(files)
         self._file_name = file_name
@@ -799,7 +802,7 @@ class DataMetrics(_BaseLoader):
         )
         return self._bytes_converter(total_bytes)
 
-    def _validate_paths(self, paths: str | Path):
+    def _validate_paths(self, paths: P):
         return self._EXECUTOR().map(self._validate_file, paths)
 
     def _get_stats(self):
@@ -851,7 +854,7 @@ class DataMetrics(_BaseLoader):
         )
 
     @classmethod
-    def _os_stats(cls, path: str | Path):
+    def _os_stats(cls, path: P):
         Stats = cls._get_subclass()
         bytes_converter = DataMetrics._bytes_converter
         stats_results = os.stat_result(os.stat(path))
