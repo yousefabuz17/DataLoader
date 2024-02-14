@@ -32,6 +32,7 @@
   - [DataMetrics Usage](#datametrics-usage)
   - [Extensions Usage](#extensions-usage)
 - [Output Example](#output-example)
+- [Future Updates](#future-updates)
 - [Feedback](#feedback)
   - [Contact Information](#contact-information)
 
@@ -217,7 +218,13 @@ DataMetrics[path/to/directory1] -> {**os_stats_results,
 ```
 
 ---
+# Future Updates
+- [ ] Implement support for specifying what loader method to use for a specific file extension.
+  - [ ] Add support for loader method kwarg parameters.
+- [ ] Add support for more file extensions.
+  - [ ] Add support for more file loaders.
 
+---
 # Feedback
 
 Feedback is crucial for the improvement of the `DataLoader` project. If you encounter any issues, have suggestions, or want to share your experience, please consider the following channels:

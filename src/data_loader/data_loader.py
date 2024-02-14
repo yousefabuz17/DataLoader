@@ -44,7 +44,7 @@ The main components include the `DataLoader` class, responsible for loading file
 - The `data_loader.py` module contains additional utility classes and functions for file handling.
 """
 
-
+import sys
 import inspect
 import json
 import logging
@@ -67,14 +67,14 @@ from time import time
 from io import TextIOWrapper
 from typing import Any, Generator, Iterable, Iterator, NamedTuple, Union
 
-import aiofiles
 import numpy as np
 import pandas as pd
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
 from json.decoder import JSONDecodeError
 from pdfminer.high_level import extract_pages
 
-from other_extenions import OTHER_EXTS
+sys.path.append((Path(__file__).parent).as_posix())
+from other_extensions import OTHER_EXTS
 
 
 def get_logger(
