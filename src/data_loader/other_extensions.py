@@ -67,6 +67,7 @@ OTHER_EXTS = frozenset(
         "prc",
         "ps1",
         "pub",
+        "py",
         "rar",
         "rpm",
         "rtf",
