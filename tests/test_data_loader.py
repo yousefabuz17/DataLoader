@@ -148,7 +148,7 @@ def test_default_extensions():
             assert all(s.endswith(ext) for s in ext_data for ext in tests_exts)
 
         for ext in tests_exts:
-            assert ext in DataLoader.DEFAULT_ALL_EXTS
+            assert ext in DataLoader.EXTENSIONS
             ext_data = test_dl_func(exts=[ext])
             assert all(s.endswith(ext) for s in ext_data)
 

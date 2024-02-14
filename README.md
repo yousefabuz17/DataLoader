@@ -39,11 +39,9 @@
 
 # Requirements
 - #### **`Python`**: ~=3.10
-- #### **`numpy`**: ~=1.26.4
 - #### **`pytest`**: ~=7.4.3
 - #### **`setuptools`**: ~=68.2.2
 - #### **`pandas`**: ~=2.2.0
-- #### **`pdfminer.six`**: ~=20221105
 > *This project mandates the use of `Python 3.10` or later versions. Compatibility issues have been identified with `Python 3.9` due to the utilization of the `kw_only` parameter in dataclasses, a critical component for the project. It is important to note that the project may undergo a more stringent backward compatibility structure in the near future.*
 
 # Getting Started
@@ -85,7 +83,7 @@ The `DataLoader` class is specifically designed for loading and processing data 
 
 ### Parameters:
   - `path` (str or Path): The path of the directory from which to load files.
-  - `directories` (Iterable): Additional directories to load files from, merging them with the specified path.
+  - `directories` (Iterable): An iterable of directories from which to all files.
   - `default_extensions` (Iterable): Default file extensions to be processed.
   - `full_posix` (bool): Indicates whether to display full POSIX paths.
   - `no_method` (bool): Indicates whether to skip loading method matching execution.

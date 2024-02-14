@@ -45,33 +45,32 @@ The main components include the `DataLoader` class, responsible for loading file
 """
 
 import sys
+import importlib
 import inspect
 import json
 import logging
 import mimetypes
+import operator
 import os
 import pickle
 import re
 import shutil
-import importlib
 from collections import namedtuple
 from configparser import ConfigParser
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from functools import cache, cached_property, partial, wraps
+from io import TextIOWrapper
 from itertools import chain
 from logging import Logger
 from pathlib import Path
 from reprlib import recursive_repr
 from time import time
-from io import TextIOWrapper
 from typing import Any, Generator, Iterable, Iterator, NamedTuple, Union
 
-import numpy as np
 import pandas as pd
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
 from json.decoder import JSONDecodeError
-from pdfminer.high_level import extract_pages
 
 sys.path.append((Path(__file__).parent).as_posix())
 from other_extensions import OTHER_EXTS
@@ -125,7 +124,7 @@ class DLoaderException(BaseException):
         self.log_method(*args)
 
 
-@dataclass(slots=True, weakref_slot=True, kw_only=True)
+@dataclass(slots=True, weakref_slot=True)
 class Timer:
     message: str = field(default="")
     verbose: bool = field(default=False)
@@ -152,7 +151,12 @@ class _BaseLoader:
 
     @classmethod
     def _compiler(
-        cls, defaults, k, escape_default=True, escape_k=True, search=True
+        cls,
+        defaults: Iterable,
+        k: str,
+        escape_default: bool = True,
+        escape_k: bool = True,
+        search: bool = True,
     ) -> re.Match:
         valid_instances = (int, str, bool, bytes, Iterable)
         if any((not k, not isinstance(k, valid_instances), hasattr(k, "__str__"))):
@@ -177,11 +181,19 @@ class _BaseLoader:
         return compiled
 
     @staticmethod
-    def _import(module_name="typing", *, package="Any"):
-        return getattr(importlib.import_module(module_name), package)
+    def _import(module_name: str = "typing", *, package: str = "Any", boolean=False):
+        try:
+            library = getattr(importlib.import_module(module_name), package)
+        except (AttributeError, ModuleNotFoundError):
+            library = False
+            if not boolean:
+                raise DLoaderException(
+                    f"An error occured trying to import {package = } from {module_name = }"
+                )
+        return library
 
     @classmethod
-    def _cap_cls_name(cls, cls_value):
+    def _cap_cls_name(cls, cls_value: Any):
         c_name = (
             cls_value.__name__
             if hasattr(cls_value, "__name__")
@@ -196,14 +208,20 @@ class _BaseLoader:
         return c_name
 
     @classmethod
-    def _exporter(cls, file, data):
+    def _exporter(cls, file: str | Path, data: Any):
         fp = Path(file).with_suffix(".json")
         with open(fp, mode="w") as metadata:
             json.dump(data, metadata, indent=4)
         print(f"\033[34m{fp!r}\033[0m. has successfully been exported.")
 
     @classmethod
-    def _too_large(cls, value, max_length=None, boolean=False, tag=False):
+    def _too_large(
+        cls,
+        value: Any,
+        max_length: int = None,
+        boolean: bool = False,
+        tag: bool = False,
+    ):
         max_len = (
             max_length if isinstance(max_length, int) else cls._terminal_size().columns
         )
@@ -212,11 +230,9 @@ class _BaseLoader:
         try:
             org_length = len(str(value))
         except TypeError:
-            org_length = None
-        if any(
+            org_length = max_len
+        if org_length >= max_len or any(
             (
-                (org_length is not None) and (org_length >= max_len),
-                org_length >= max_len,
                 isinstance(value, Generator),
                 isinstance(value, ConfigParser),
                 isinstance(value, TextIOWrapper),
@@ -233,7 +249,7 @@ class _BaseLoader:
 
     @classmethod
     def _validate_file(
-        cls, file_path: Union[str, Path], directory=False, verbose=False
+        cls, file_path: Union[str, Path], directory: bool = False, verbose: bool = False
     ) -> Path:
         try:
             fp = Path(file_path)
@@ -270,7 +286,7 @@ class _BaseLoader:
         return shutil.get_terminal_size()
 
     @staticmethod
-    def none_generator(d: Any, default=None) -> list:
+    def none_generator(d: Any, default: Any = None) -> list:
         return [default] * len(d)
 
     @staticmethod
@@ -304,7 +320,7 @@ class _BaseLoader:
         return c
 
     @staticmethod
-    def _check_workers(workers):
+    def _check_workers(workers: int | float):
         if not workers or isinstance(workers, (int, float)):
             return workers
         raise DLoaderException(
@@ -340,7 +356,7 @@ class _BaseLoader:
         return new_tuple
 
     @classmethod
-    def _get_params(cls, __object=None):
+    def _get_params(cls, __object: Any = None):
         try:
             obj = __object or cls
             params = inspect.signature(obj)
@@ -361,7 +377,7 @@ class _BaseLoader:
 
 class _SpecialDictRepr(dict):
     def __init__(self, *args, **kwargs):
-        module = kwargs.pop("module", DataLoader._cap_cls_name(dict))
+        module = kwargs.pop("module", "Dict")
         super().__init__(*args, **kwargs)
         self._module = module
 
@@ -377,7 +393,7 @@ class _SpecialDictRepr(dict):
 
     __str__ = __repr__
 
-    def _check_length(self, values):
+    def _check_length(self, values: Iterable):
         return any(map(partial(_BaseLoader._too_large, boolean=True), values))
 
     def reset(self):
@@ -387,7 +403,7 @@ class _SpecialDictRepr(dict):
 class _SpecialGenRepr(Iterable):
     __slots__ = ("__weakrefs__", "_id", "_gen", "_module", "_gen_id")
 
-    def __init__(self, gen, module=None) -> None:
+    def __init__(self, gen: Iterable, module: str = None) -> None:
         self._id = hex(id(self))
         self._gen = gen
         self._module = module or Iterable.__name__
@@ -398,7 +414,7 @@ class _SpecialGenRepr(Iterable):
 
     @recursive_repr()
     def __repr__(self) -> str:
-        if self._module == DataLoader.__name__:
+        if self._module == "DataLoader":
             return (
                 f"<generator object {self._module}.files.<key-value> at {self._gen_id}>"
             )
@@ -409,22 +425,21 @@ class _SpecialGenRepr(Iterable):
 
 @dataclass(slots=True, weakref_slot=True)
 class Extensions:
-    ALL_EXTS: dict = field(init=False)
+    _ALL_EXTS: dict = field(init=False, default=None)
 
-    def __post_init__(self):
-        other_exts = {
-            ext: self._ext_tuple(ext, self._method_matcher(ext))
-            for ext in self.other_exts()
-        }
-        self.ALL_EXTS = {
-            **other_exts,
-            **self.defaults,
-        }
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({', '.join('{}={}'.format(*i) for i in self.__getstate__().items())})"
+    def __repr__(self) -> str:
+        return f"{_SpecialDictRepr(sorted(self.ALL_EXTS.items(), key=lambda kv: kv[0]), module='Extensions')}"
 
     __str__ = __repr__
+
+    @property
+    def ALL_EXTS(self) -> dict:
+        if not self._ALL_EXTS:
+            self._ALL_EXTS = {
+                **self._other_exts(),
+                **self.defaults,
+            }
+        return self._ALL_EXTS
 
     def period_remover(cls_method):
         @wraps(cls_method)
@@ -436,33 +451,25 @@ class Extensions:
         return wrappper
 
     @period_remover
-    def __contains__(self, __ext: str):
+    def __contains__(self, __ext: str) -> bool:
         return __ext in self.ALL_EXTS
 
     @period_remover
-    def __getitem__(self, __ext: str):
+    def __getitem__(self, __ext: str) -> Any:
         return self.ALL_EXTS[__ext]
 
     def __getattr__(self, __ext: str) -> Any:
         return self[__ext]
 
-    def __getstate__(self):
-        return {
-            i.name: list(getattr(self, i.name))
-            for i in fields(self)
-            if i.name in ("DEFAULT_ALL_EXTS", "ALL_EXTS")
-        }
+    @property
+    def subclass(self) -> _BaseLoader:
+        return _BaseLoader()
 
     @property
-    def subclass(self):
-        return _BaseLoader
-
-    @property
-    def defaults(self):
+    def defaults(self) -> dict:
         return {
             "csv": self._ext_tuple("csv", pd.read_csv),
             "hdf": self._ext_tuple("hdf", pd.read_hdf),
-            "pdf": self._ext_tuple("pdf", extract_pages),
             "sql": self._ext_tuple("sql", pd.read_sql),
             "xml": self._ext_tuple("xml", pd.read_xml),
             "pickle": self._ext_tuple(
@@ -472,23 +479,32 @@ class Extensions:
             "empty": self._ext_tuple("", lambda path: open(path).read()),
         }
 
-    def other_exts(self):
-        other_exts = chain.from_iterable((mimetypes.types_map.keys(), OTHER_EXTS))
-        return {self.subclass._rm_period(k): None for k in other_exts}
+    def _other_exts(self) -> dict:
+        all_other_exts = (
+            self.subclass._rm_period(e)
+            for e in chain.from_iterable((mimetypes.types_map.keys(), OTHER_EXTS))
+        )
+        return {k: self._ext_tuple(k, self._method_matcher(k)) for k in all_other_exts}
 
     def _ext_tuple(self, *args, **kwargs) -> NamedTuple:
         return self.subclass._get_subclass()(*args, **kwargs)
 
     @period_remover
-    def _method_matcher(self, ext):
+    def _method_matcher(self, ext: str) -> Any:
+        import_ext = (
+            lambda m, p: self.subclass._import(module_name=m, package=p, boolean=True)
+            or open
+        )
         if ext in ("xls", "xlsx"):
             return pd.read_excel
-        elif ext in ("cfg", "ini", "md", "conf"):
+        elif ext in ("cfg", "ini", "conf"):
             return lambda path: self.subclass._read_config(path)
+        elif ext == "pdf":
+            return import_ext("pdfminer.high_level", "extract_pages")
         else:
-            return self.defaults["empty"]
+            return self.defaults["empty"].loader_
 
-    def get_loader(self, ext: str):
+    def get_loader(self, ext: str) -> Any:
         return self[ext]
 
     def is_supported(self, ext: str) -> bool:
@@ -506,6 +522,8 @@ class Extensions:
             new_exts[ext] = self._ext_tuple(
                 ext, lambda path: l_method(path, **l_kwargs)
             )
+        if new_exts:
+            new_exts.update({"empty": self.defaults["empty"]})
         return new_exts
 
 
@@ -515,13 +533,14 @@ class DataLoader(_BaseLoader):
 
     Args:
         - `path` (str or Path): The path of the directory from which to load files.
-        - `directories` (Iterable): Additional directories to load files from, merging them with the specified path.
+        - `directories` (Iterable): An iterable of directories from which to all files.
         - `default_extensions` (Iterable): Default file extensions to be processed.
         - `full_posix` (bool): Indicates whether to display full POSIX paths.
         - `no_method` (bool): Indicates whether to skip loading method matching execution.
         - `verbose` (bool): Indicates whether to display verbose output.
         - `generator` (bool): Indicates whether to return the loaded files as a generator; otherwise, returns as a dictionary.
         - `total_workers` (int): Number of workers for parallel execution.
+        - `ext_loaders` (Iterable[str, Any, dict]): Dictionary containing extensions mapped to specified loaders.
 
     Methods:
         - `load_file(file_path)`: Load a single file and return a named tuple containing path and contents.
@@ -548,7 +567,7 @@ class DataLoader(_BaseLoader):
         "_total_workers",
         "_ext_loaders",
     )
-    DEFAULT_ALL_EXTS = Extensions()
+    EXTENSIONS = Extensions()
 
     def __init__(
         self,
@@ -573,17 +592,19 @@ class DataLoader(_BaseLoader):
         self._files = None
         self._dir_files = None
         self._ext_loaders = ext_loaders
+        logger.write_log = self._verbose
 
     @property
     def all_exts(self):
-        extensions = self.DEFAULT_ALL_EXTS
+        extensions = self.EXTENSIONS
         return extensions.customize(**{}) or extensions
 
-    def _ext_method(self, fp):
+    def _ext_method(self, fp: str | Path):
         fp = self._validate_file(fp)
         suffix = self._rm_period(fp.suffix)
-        if suffix == self.all_exts["empty"].suffix_:
-            loading_method = self.all_exts["empty"].loader_
+        empty_method = self.all_exts["empty"]
+        if suffix == empty_method.suffix_:
+            loading_method = empty_method.loader_
         elif self.all_exts.is_supported(suffix):
             try:
                 loading_method = self.all_exts[suffix].loader_
@@ -605,11 +626,17 @@ class DataLoader(_BaseLoader):
         )
 
     @classmethod
-    def load_file(cls, fp_or_dir):
+    def load_file(cls, fp_or_dir: str | Path):
         return cls()._load_file(cls._validate_file(fp_or_dir))
 
     @classmethod
-    def get_files(cls, directory, defaults="", startswith="", verbose=False):
+    def get_files(
+        cls,
+        directory: str | Path,
+        defaults: Iterable = "",
+        startswith: str = "",
+        verbose: bool = False,
+    ):
         validate_file = partial(cls._validate_file, verbose=verbose)
         directory = validate_file(directory)
         no_dirs = lambda p: p.is_file() and not p.is_dir()
@@ -623,7 +650,7 @@ class DataLoader(_BaseLoader):
             if p.name.startswith(f"{startswith}") and startswith or filter_files(p)
         )
 
-    def _validate_exts(self, extensions):
+    def _validate_exts(self, extensions: Iterable):
         if extensions is None:
             return
 
@@ -646,7 +673,7 @@ class DataLoader(_BaseLoader):
             )
         return valid_exts
 
-    def _load_file(self, file_path):
+    def _load_file(self, file_path: str | Path):
         fp_name = "/".join(file_path.parts[-2:])
         loading_method = open if self._no_method else self._ext_method(file_path)
         PathInfo = self._create_subclass(
@@ -663,7 +690,7 @@ class DataLoader(_BaseLoader):
             return PathInfo(path=file_path, contents=p_contents)
 
     @classmethod
-    def _base_executor(cls, func, y, total_workers=None):
+    def _base_executor(cls, func: Any, y: Any, total_workers: int = None):
         return cls._EXECUTOR(max_workers=total_workers).map(func, y)
 
     def _get_dir_files(self):
@@ -690,7 +717,7 @@ class DataLoader(_BaseLoader):
     def dir_files(self):
         if self._dir_files is None:
             self._dir_files = self._get_dir_files()
-        return self._repr_files(self._dir_files)
+        return self.special_repr(self._dir_files)
 
     def _execute_path(self):
         try:
@@ -709,15 +736,15 @@ class DataLoader(_BaseLoader):
     def files(self):
         if self._files is None:
             self._files = self._execute_path()
-        return self._repr_files(self._files)
+        return self.special_repr(self._files)
 
     @cache
-    def _repr_files(self, files):
+    def special_repr(self, data: Iterable):
         module = self.__class__.__name__
         return (
-            _SpecialDictRepr(files, module=module)
+            _SpecialDictRepr(data, module=module)
             if not self._generator
-            else _SpecialGenRepr(files, module=module)
+            else _SpecialGenRepr(data, module=module)
         )
 
 
@@ -772,7 +799,7 @@ class DataMetrics(_BaseLoader):
         )
         return self._bytes_converter(total_bytes)
 
-    def _validate_paths(self, paths):
+    def _validate_paths(self, paths: str | Path):
         return self._EXECUTOR().map(self._validate_file, paths)
 
     def _get_stats(self):
@@ -791,7 +818,6 @@ class DataMetrics(_BaseLoader):
         # XXX (KB)-1024, (MB)-1048576, (GB)-1073741824, (TB)-1099511627776
         if not num:
             return
-
         Stats = cls._get_subclass()
         conversions = dict(
             zip(
@@ -801,7 +827,7 @@ class DataMetrics(_BaseLoader):
                     "GB (Gigabytes)",
                     "TB (Terabytes)",
                 ),
-                np.power(base := 1024, np.arange(1, 5)),
+                (operator.pow(base := 1024, n) for n in range(1, 5)),
             )
         )
         results = next(
@@ -825,7 +851,7 @@ class DataMetrics(_BaseLoader):
         )
 
     @classmethod
-    def _os_stats(cls, path):
+    def _os_stats(cls, path: str | Path):
         Stats = cls._get_subclass()
         bytes_converter = DataMetrics._bytes_converter
         stats_results = os.stat_result(os.stat(path))
@@ -870,7 +896,7 @@ class DataMetrics(_BaseLoader):
 
 # XXX Metadata Information
 METADATA = {
-    "version": (__version__ := "1.0.0"),
+    "version": (__version__ := "1.0.9"),
     "license": (__license__ := "Apache License, Version 2.0"),
     "url": (__url__ := "https://github.com/yousefabuz17/DataLoader"),
     "author": (__author__ := "Yousef Abuzahrieh <yousef.zahrieh17@gmail.com"),
@@ -880,7 +906,6 @@ METADATA = {
     ),
     "doc": __doc__,
 }
-
 
 __all__ = (
     "METADATA",
