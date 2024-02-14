@@ -407,23 +407,18 @@ class _SpecialGenRepr(Iterable):
     __str__ = __repr__
 
 
-from typing import overload
-
-
 @dataclass(slots=True, weakref_slot=True)
 class Extensions:
     ALL_EXTS: dict = field(init=False)
-    _EXT_TUPLE: NamedTuple = _BaseLoader._get_subclass()
 
     def __post_init__(self):
-        other_exts = set(
-            self._EXT_TUPLE(ext, self._method_matcher(ext))
-            for ext in self._other_extensions()
-        )
-        defaults = {e: v for e, v in self._defaults().items()}
+        other_exts = {
+            ext: self._ext_tuple(ext, self._method_matcher(ext))
+            for ext in self.other_exts()
+        }
         self.ALL_EXTS = {
-            **{ext.suffix_: ext for ext in other_exts},
-            **defaults,
+            **other_exts,
+            **self.defaults,
         }
 
     def __repr__(self):
@@ -431,11 +426,11 @@ class Extensions:
 
     __str__ = __repr__
 
-    def period_remover(method):
-        @wraps(method)
+    def period_remover(cls_method):
+        @wraps(cls_method)
         def wrappper(self, *args, **kwargs):
-            args = map(self.rm_period, args)
-            m = method(self, *args, **kwargs)
+            args = map(self.subclass._rm_period, args)
+            m = cls_method(self, *args, **kwargs)
             return m
 
         return wrappper
@@ -445,50 +440,53 @@ class Extensions:
         return __ext in self.ALL_EXTS
 
     @period_remover
-    def __getitem__(self, __key: str):
-        return self.ALL_EXTS[__key]
+    def __getitem__(self, __ext: str):
+        return self.ALL_EXTS[__ext]
 
-    def __getattr__(self, __name: str) -> Any:
-        return self[__name]
+    def __getattr__(self, __ext: str) -> Any:
+        return self[__ext]
 
     def __getstate__(self):
         return {
             i.name: list(getattr(self, i.name))
             for i in fields(self)
-            if i.name in ("DEFAULT_EXTS", "ALL_EXTS")
+            if i.name in ("DEFAULT_ALL_EXTS", "ALL_EXTS")
         }
 
-    @classmethod
-    def rm_period(cls, ext, string=True):
-        return _BaseLoader._rm_period(ext, string=string)
+    @property
+    def subclass(self):
+        return _BaseLoader
 
-    def _other_extensions(self):
-        other_exts = chain.from_iterable((mimetypes.types_map.keys(), OTHER_EXTS))
-        return {self.rm_period(k): None for k in other_exts}
-
-    def _method_matcher(self, ext):
-        return (
-            pd.read_excel
-            if ext in ("xls", "xlsx")
-            else lambda path: _BaseLoader._read_config(path)
-            if ext in ("cfg", "ini", "md")
-            else open
-        )
-
-    def _defaults(self):
+    @property
+    def defaults(self):
         return {
-            "csv": self._EXT_TUPLE("csv", pd.read_csv),
-            "hdf": self._EXT_TUPLE("hdf", pd.read_hdf),
-            "pdf": self._EXT_TUPLE("pdf", extract_pages),
-            "sql": self._EXT_TUPLE("sql", pd.read_sql),
-            "xml": self._EXT_TUPLE("xml", pd.read_xml),
-            "pickle": self._EXT_TUPLE(
+            "csv": self._ext_tuple("csv", pd.read_csv),
+            "hdf": self._ext_tuple("hdf", pd.read_hdf),
+            "pdf": self._ext_tuple("pdf", extract_pages),
+            "sql": self._ext_tuple("sql", pd.read_sql),
+            "xml": self._ext_tuple("xml", pd.read_xml),
+            "pickle": self._ext_tuple(
                 "pickle", lambda path: pickle.load(open(path, mode="rb"))
             ),
-            "json": self._EXT_TUPLE("json", lambda path: json.load(open(path))),
-            "txt": self._EXT_TUPLE("txt", lambda path: open(path).read()),
-            "empty": self._EXT_TUPLE("", lambda path: open(path).read()),
+            "json": self._ext_tuple("json", lambda path: json.load(open(path))),
+            "empty": self._ext_tuple("", lambda path: open(path).read()),
         }
+
+    def other_exts(self):
+        other_exts = chain.from_iterable((mimetypes.types_map.keys(), OTHER_EXTS))
+        return {self.subclass._rm_period(k): None for k in other_exts}
+
+    def _ext_tuple(self, *args, **kwargs) -> NamedTuple:
+        return self.subclass._get_subclass()(*args, **kwargs)
+
+    @period_remover
+    def _method_matcher(self, ext):
+        if ext in ("xls", "xlsx"):
+            return pd.read_excel
+        elif ext in ("cfg", "ini", "md", "conf"):
+            return lambda path: self.subclass._read_config(path)
+        else:
+            return self.defaults["empty"]
 
     def get_loader(self, ext: str):
         return self[ext]
@@ -498,6 +496,17 @@ class Extensions:
 
     def has_loader(self, ext: str) -> bool:
         return self.get_loader(ext) is not open
+
+    def customize(self, **kwargs: dict[str, Any, dict]) -> dict:
+        new_exts = {}
+        for ext, ext_values in kwargs.items():
+            l_method, l_kwargs = ext_values
+            l_params = self.subclass._get_params(l_method)
+            l_kwargs = {k: v for k, v in l_kwargs.items() if k in l_params}
+            new_exts[ext] = self._ext_tuple(
+                ext, lambda path: l_method(path, **l_kwargs)
+            )
+        return new_exts
 
 
 class DataLoader(_BaseLoader):
@@ -521,7 +530,7 @@ class DataLoader(_BaseLoader):
         - `files`: Get loaded files as a dictionary or generator, depending on the `generator` parameter.
 
     Attributes:
-        - `ALL_EXTS`: Dictionary containing file extensions and their corresponding loading methods.
+        - `all_exts`: Dictionary containing file extensions and their corresponding loading methods.
 
     Note:
         The DataLoader class inherits from the _BaseLoader class, which provides common utility functions and features.
@@ -537,20 +546,21 @@ class DataLoader(_BaseLoader):
         "_verbose",
         "_generator",
         "_total_workers",
+        "_ext_loaders",
     )
-
-    ALL_EXTS = Extensions()
+    DEFAULT_ALL_EXTS = Extensions()
 
     def __init__(
         self,
-        path=None,
-        directories=None,
-        default_extensions=None,
-        full_posix=True,
-        no_method=False,
-        verbose=False,
-        generator=True,
-        total_workers=None,
+        path: str | Path = None,
+        directories: Iterable = None,
+        default_extensions: Iterable = None,
+        full_posix: bool = True,
+        no_method: bool = False,
+        verbose: bool = False,
+        generator: bool = True,
+        total_workers: int | float = None,
+        ext_loaders: dict = None,
     ):
         self._path = path
         self._directories = directories
@@ -562,18 +572,21 @@ class DataLoader(_BaseLoader):
         self._total_workers = self._check_workers(total_workers)
         self._files = None
         self._dir_files = None
+        self._ext_loaders = ext_loaders
 
-    @classmethod
-    def _ext_method(cls, fp):
-        if not isinstance(fp, Path):
-            fp = cls._validate_file(fp)
-        suffix = cls._rm_period(fp.suffix)
-        loading_method = open
-        if suffix == cls.ALL_EXTS["empty"].suffix_:
-            loading_method = cls.ALL_EXTS["empty"].loader_
-        elif suffix in cls.ALL_EXTS:
+    @property
+    def all_exts(self):
+        extensions = self.DEFAULT_ALL_EXTS
+        return extensions.customize(**{}) or extensions
+
+    def _ext_method(self, fp):
+        fp = self._validate_file(fp)
+        suffix = self._rm_period(fp.suffix)
+        if suffix == self.all_exts["empty"].suffix_:
+            loading_method = self.all_exts["empty"].loader_
+        elif self.all_exts.is_supported(suffix):
             try:
-                loading_method = cls.ALL_EXTS[suffix].loader_
+                loading_method = self.all_exts[suffix].loader_
             except AttributeError:
                 DLoaderException(
                     f"ExtensionTypeError>>Check file {fp =!r} extensions. Failed to find a relative working loading method ({loading_method =!r}). Defaulting to {open!r}",
@@ -585,7 +598,9 @@ class DataLoader(_BaseLoader):
     def _get_files(self):
         return self.get_files(
             self._path,
-            None if not self._default_exts else self._validate_exts(self._default_exts),
+            self.all_exts["empty"].suffix_
+            if not self._default_exts
+            else self._validate_exts(self._default_exts),
             self._verbose,
         )
 
@@ -594,39 +609,35 @@ class DataLoader(_BaseLoader):
         return cls()._load_file(cls._validate_file(fp_or_dir))
 
     @classmethod
-    def _path_files(cls, directory, startswith=""):
-        return [
-            p
-            for p in Path(directory).iterdir()
-            if p.name.startswith(startswith) and cls._validate_file(p)
-        ]
-
-    @classmethod
-    def get_files(cls, directory, defaults=None, verbose=False):
+    def get_files(cls, directory, defaults="", startswith="", verbose=False):
         validate_file = partial(cls._validate_file, verbose=verbose)
         directory = validate_file(directory)
-        exts = cls.ALL_EXTS["empty"].suffix_ if not defaults else defaults
         no_dirs = lambda p: p.is_file() and not p.is_dir()
-        ext_pattern = partial(cls._compiler, exts, escape_k=False)
+        ext_pattern = partial(cls._compiler, defaults, escape_k=False)
         filter_files = lambda fp: all(
             (no_dirs(fp), ext_pattern(cls._rm_period(fp.suffix)), validate_file(fp))
         )
-        return (p for p in directory.iterdir() if filter_files(p))
+        return (
+            p
+            for p in directory.iterdir()
+            if p.name.startswith(f"{startswith}") and startswith or filter_files(p)
+        )
 
-    @classmethod
-    def _validate_exts(cls, extensions):
+    def _validate_exts(self, extensions):
         if extensions is None:
             return
 
         try:
-            org_exts = set(cls._rm_period(e) for e in extensions)
-            valid_exts = set(e for e in org_exts if e in cls.ALL_EXTS)
-            failed_exts = set(filter(lambda ext: cls._rm_period(ext) not in valid_exts, extensions))
+            org_exts = set(self._rm_period(e) for e in extensions)
+            valid_exts = set(e for e in org_exts if e in self.all_exts)
+            failed_exts = set(
+                filter(lambda ext: self._rm_period(ext) not in valid_exts, extensions)
+            )
         except Exception:
             raise Exception
         if failed_exts == org_exts:
             raise DLoaderException(
-                f"DefaultExtensionsError>>All provided extensions are invalid: {org_exts!r}\nAll available extensions:\n{sorted(cls.ALL_EXTS)}"
+                f"DefaultExtensionsError>>All provided extensions are invalid: {org_exts!r}\nAll available extensions:\n{sorted(self.all_exts)}"
             )
         if failed_exts:
             DLoaderException(
@@ -731,11 +742,16 @@ class DataMetrics(_BaseLoader):
         "_file_name",
         "_full_posix",
         "_total_workers",
+        "_total_files",
         "_all_stats",
     )
 
     def __init__(
-        self, files, file_name=None, full_posix=False, total_workers=None
+        self,
+        files: Iterable,
+        file_name: str = None,
+        full_posix: bool = False,
+        total_workers: int | float = None,
     ) -> None:
         self._files = self._validate_paths(files)
         self._file_name = file_name
@@ -864,6 +880,7 @@ METADATA = {
     ),
     "doc": __doc__,
 }
+
 
 __all__ = (
     "METADATA",

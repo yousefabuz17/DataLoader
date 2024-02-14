@@ -10,14 +10,14 @@ sys.path.append(
 from data_loader import DataLoader, DataMetrics, DLoaderException
 
 
-path_files = DataLoader._path_files
+path_files = lambda **kwargs: list(DataLoader.get_files(**kwargs))
 get_files = lambda **kwargs: DataLoader(**kwargs).files
 get_dir_files = lambda **kwargs: DataLoader(**kwargs).dir_files
 get_paths_exts = lambda func: (DataLoader._rm_period(Path(p).suffix) for p in func)
 Import = lambda m, p: DataLoader._import(module_name=m, package=p)
 TEST_DATAMETRICS = PY_TESTS_FILE.parent / "test_datametrics"
 TEST_FILES = PY_TESTS_FILE.parent / "test_files"
-TEST_DIRS = path_files(TEST_FILES / "test_directories", startswith="test")
+TEST_DIRS = path_files(directory=TEST_FILES / "test_directories", startswith="test")
 TEST_FILES_COUNT, TEST_DIRS_COUNT = 11, 25
 
 
@@ -148,7 +148,7 @@ def test_default_extensions():
             assert all(s.endswith(ext) for s in ext_data for ext in tests_exts)
 
         for ext in tests_exts:
-            assert ext in DataLoader.ALL_EXTS
+            assert ext in DataLoader.DEFAULT_ALL_EXTS
             ext_data = test_dl_func(exts=[ext])
             assert all(s.endswith(ext) for s in ext_data)
 
