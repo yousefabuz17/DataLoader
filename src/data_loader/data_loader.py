@@ -52,10 +52,11 @@ import logging
 import mimetypes
 import operator
 import os
+import pandas as pd
 import pickle
 import re
 import shutil
-from collections import namedtuple
+from collections import deque, namedtuple
 from configparser import ConfigParser
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -68,9 +69,8 @@ from reprlib import recursive_repr
 from time import time
 from typing import Any, Generator, Iterable, Iterator, NamedTuple, TypeVar, Union
 
-import pandas as pd
-from pandas.errors import DtypeWarning, EmptyDataError, ParserError
 from json.decoder import JSONDecodeError
+from pandas.errors import DtypeWarning, EmptyDataError, ParserError
 
 sys.path.append((Path(__file__).parent).as_posix())
 from other_extensions import OTHER_EXTS
@@ -119,6 +119,20 @@ logger = get_logger(level=logging.INFO, write_log=True)
 
 
 class DLoaderException(BaseException):
+    """
+    Custom exception class for DataLoader-related errors.
+
+    #### Attributes:
+        - `log_method`: Logging method to use when the exception is raised.
+
+    #### Args:
+        - `*args` (object): Additional arguments.
+        - `log_method` (callable): Logging method, default is `logger.critical`.
+
+    #### Methods:
+        - `__init__(*args, log_method=logger.critical)`: Initializes the exception instance.
+    """
+
     __slots__ = ("__weakrefs__", "log_method")
 
     def __init__(self, *args: object, log_method=logger.critical) -> None:
@@ -129,16 +143,41 @@ class DLoaderException(BaseException):
 
 @dataclass
 class Timer:
+    """
+    A context manager to measure the execution time of a block of code.
+
+    #### Args:
+        - `message` (str): Custom message to display before the execution time.
+        - `verbose` (bool): Indicates whether to display the message and execution time.
+
+    #### Attributes:
+        - `_T_START` (float): Start time.
+        - `_T_END` (float): End time.
+
+    #### Methods:
+        - `__enter__`: Called when entering the context block, returns the start time.
+        - `__exit__(*args, **kwargs)`: Called when exiting the context block, calculates and displays the execution time.
+    """
+
     message: str = field(default="")
     verbose: bool = field(default=False)
     _T_START: float = field(init=False, repr=False, default_factory=lambda: time)
     _T_END: float = field(init=False, repr=False, default_factory=lambda: time)
 
     def __enter__(self):
+        """
+        Called when entering the context block, returns the start time.
+
+        #### Returns:
+            - `float`: Start time.
+        """
         self._T_START = self._T_START()
         return self._T_START
 
     def __exit__(self, *args, **kwargs):
+        """
+        Called when exiting the context block, calculates and displays the execution time.
+        """
         elapsed_time = self._T_END() - self._T_START
         minutes, seconds = divmod(elapsed_time, 60)
         if self.verbose:
@@ -289,31 +328,12 @@ class _BaseLoader:
         return shutil.get_terminal_size()
 
     @staticmethod
-    def none_generator(d: Any, default: Any = None) -> list:
-        return [default] * len(d)
-
-    @staticmethod
     def _rm_period(p: str, string=True):
         rm_p = lambda s: s.lstrip(".").lower()
         return type(p)(rm_p(e) for e in p) if not string else rm_p(p)
 
-    @staticmethod
-    def _all_errors():
-        return frozenset(
-            {
-                PermissionError,
-                UnicodeDecodeError,
-                ParserError,
-                DtypeWarning,
-                OSError,
-                EmptyDataError,
-                JSONDecodeError,
-                Exception,
-            }
-        )
-
     @classmethod
-    def _base_executor(cls, func, y, total_workers=None):
+    def base_executor(cls, func, y, total_workers=None):
         return cls._EXECUTOR(max_workers=total_workers).map(func, y)
 
     @classmethod
@@ -359,6 +379,21 @@ class _BaseLoader:
         return new_tuple
 
     @classmethod
+    def base_executor(cls, func: Any, y: Any, total_workers: int = None):
+        """
+        Execute a base function with parallel workers.
+
+        #### Args:
+            - `func` (Any): Function to be executed.
+            - `y` (Any): Argument for the function.
+            - `total_workers` (int): Number of parallel workers.
+
+        #### Returns:
+            - `Generator`: Result generator.
+        """
+        return cls._EXECUTOR(max_workers=total_workers).map(func, y)
+
+    @classmethod
     def _get_params(cls, __object: Any = None):
         try:
             obj = __object or cls
@@ -379,6 +414,21 @@ class _BaseLoader:
 
 
 class _SpecialDictRepr(dict):
+    """
+    A specialized dictionary class with enhanced representation for better readability.
+
+    #### Args:
+        - *args, **kwargs: Positional and keyword arguments passed to the underlying dict constructor.
+        - `module` (str): The name of the module to be used in the representation.
+
+    #### Methods:
+        - `__repr__()`: Returns a detailed string representation of the dictionary.
+        - `__str__()`: Returns the same representation as `__repr__` for compatibility.
+
+    #### Note:
+        - This class is designed to enhance the readability of dictionary representations.
+    """
+
     def __init__(self, *args, **kwargs):
         module = kwargs.pop("module", "Dict")
         super().__init__(*args, **kwargs)
@@ -386,6 +436,12 @@ class _SpecialDictRepr(dict):
 
     @recursive_repr()
     def __repr__(self) -> str:
+        """
+        Returns a detailed string representation of the dictionary.
+
+        #### Returns:
+            - `str`: A string representation of the dictionary.
+        """
         cls_name = self._module
         p_holder, spacing = "({}, {})", f",\n{' ':>{len(cls_name)+1}}"
         too_large = lambda val: _BaseLoader._too_large(
@@ -396,14 +452,47 @@ class _SpecialDictRepr(dict):
 
     __str__ = __repr__
 
-    def _check_length(self, values: Iterable):
+    def _check_length(self, values: Iterable) -> bool:
+        """
+        Check if any value in the iterable exceeds the maximum allowed length.
+
+        #### Args:
+            `values` (Iterable): Iterable containing values to be checked.
+
+        #### Returns:
+            - `bool`: True if any value exceeds the maximum length, False otherwise.
+        """
         return any(map(partial(_BaseLoader._too_large, boolean=True), values))
 
     def reset(self):
+        """
+        Reset the dictionary.
+
+        Returns:
+            - `dict`: A new dictionary with the same items.
+        """
         return dict(self.items())
 
 
 class _SpecialGenRepr(Iterable):
+    """
+    A specialized iterable class with enhanced representation for better readability.
+
+    #### Args:
+        - `gen` (Iterable): The underlying iterable to be represented.
+        - `module` (str): The name of the module to be used in the representation.
+
+    #### Attributes:
+        - `gen` (Iterable): The underlying iterable.
+        - `module` (str): The module name used in the representation.
+
+    #### Methods:
+        - `gen_id` (str): The hexadecimal ID of the underlying iterable.
+        - `__iter__()`: Returns an iterator over the underlying iterable.
+        - `__repr__()`: Returns a detailed string representation of the iterable.
+        - `__str__()`: Returns the same representation as `__repr__` for compatibility.
+    """
+
     __slots__ = ("__weakrefs__", "_id", "_gen", "_module", "_gen_id")
 
     def __init__(self, gen: Iterable, module: str = None) -> None:
@@ -417,6 +506,12 @@ class _SpecialGenRepr(Iterable):
 
     @recursive_repr()
     def __repr__(self) -> str:
+        """
+        Returns a detailed string representation of the iterable.
+
+        Returns:
+            - `str`: A string representation of the iterable.
+        """
         if self._module == "DataLoader":
             return (
                 f"<generator object {self._module}.files.<key-value> at {self._gen_id}>"
@@ -425,26 +520,50 @@ class _SpecialGenRepr(Iterable):
 
     __str__ = __repr__
 
+    @cached_property
+    def gen_id(self):
+        """
+        Property that returns the hexadecimal ID of the underlying iterable.
+
+        #### Returns:
+            `str`: The hexadecimal ID of the underlying iterable.
+        """
+        return self._gen_id
+
 
 @dataclass
 class Extensions:
+    """
+    A class representing file extensions and their associated loader methods.
+
+    #### Methods:
+        - `__repr__()`: Returns a string representation of the Extensions class.
+        - `__str__()`: Returns the same representation as __repr__ for compatibility.
+        - `__contains__`(__ext: str) -> bool: Checks if a file extension is supported.
+        - `__getitem__`(__ext: str) -> Any: Retrieves the loader method for a specific file extension.
+        - `__getattr__`(__ext: str) -> Any: Gets the loader method for a specific file extension.
+        - `ALL_EXTS` (property) -> dict: Retrieves all supported file extensions with their loader methods.
+        - `ALL_EXTS`(value: dict) -> None: Sets the file extensions and their loader methods.
+        - `defaults`() -> dict: Returns a dictionary with default file extensions and their loader methods.
+        - `get_loader`(ext: str) -> Any: Retrieves the loader method for a specific file extension.
+        - `is_supported`(ext: str) -> bool: Checks if a specific file extension is supported.
+        - `has_loader`(ext: str) -> bool: Checks if a specific file extension has a loader method implemented.
+        - `customize`(**kwargs: dict[str, Any, dict]) -> dict: Customizes file extensions with new loader methods.
+
+    #### Note:
+        - The Extensions class is designed to manage file extensions and their loader methods dynamically.
+    """
+
     _ALL_EXTS: dict = field(init=False, default=None)
 
     def __repr__(self) -> str:
-        return f"{_SpecialDictRepr(sorted(self.ALL_EXTS.items(), key=lambda kv: kv[0]), module='Extensions')}"
+        return f"{_SpecialDictRepr(sorted(self.ALL_EXTS.items(), key=lambda kv: kv[0]), module=self.__class__.__name__)}"
 
     __str__ = __repr__
 
-    @property
-    def ALL_EXTS(self) -> dict:
-        if not self._ALL_EXTS:
-            self._ALL_EXTS = {
-                **self._other_exts(),
-                **self.defaults,
-            }
-        return self._ALL_EXTS
-
     def period_remover(cls_method):
+        """Decorator that removes periods from file extensions."""
+
         @wraps(cls_method)
         def wrappper(self, *args, **kwargs):
             args = map(self.subclass._rm_period, args)
@@ -455,21 +574,56 @@ class Extensions:
 
     @period_remover
     def __contains__(self, __ext: str) -> bool:
+        """Checks if a file extension is supported."""
         return __ext in self.ALL_EXTS
 
     @period_remover
     def __getitem__(self, __ext: str) -> Any:
+        """Retrieves the loader method for a specific file extension."""
         return self.ALL_EXTS[__ext]
 
     def __getattr__(self, __ext: str) -> Any:
+        """Gets the loader method for a specific file extension."""
         return self[__ext]
 
     @property
     def subclass(self) -> _BaseLoader:
+        """Returns an instance of the _BaseLoader class."""
         return _BaseLoader()
 
     @property
+    def ALL_EXTS(self) -> dict:
+        """
+        Retrieves all supported file extensions with their loader methods.
+
+        #### Returns:
+            `dict`: A dictionary containing file extensions and their loader methods.
+        """
+        if not self._ALL_EXTS:
+            self._ALL_EXTS = {
+                **self._other_exts(),
+                **self.defaults,
+            }
+        return self._ALL_EXTS
+
+    @ALL_EXTS.setter
+    def ALL_EXTS(self, value: dict) -> None:
+        """
+        Sets the file extensions and their loader methods.
+
+        #### Args:
+            - `value` (dict): A dictionary containing file extensions and their loader methods.
+        """
+        self._ALL_EXTS = value
+
+    @property
     def defaults(self) -> dict:
+        """
+        Returns a dictionary with default file extensions and their loader methods.
+
+        #### Returns:
+            - `dict`: A dictionary with default file extensions and their loader methods.
+        """
         return {
             "csv": self._ext_tuple("csv", pd.read_csv),
             "hdf": self._ext_tuple("hdf", pd.read_hdf),
@@ -483,6 +637,12 @@ class Extensions:
         }
 
     def _other_exts(self) -> dict:
+        """
+        Returns additional file extensions based on MIME types and other various extensions.
+
+        #### Returns:
+            - `dict`: A dictionary containing additional file extensions and their loader methods.
+        """
         all_other_exts = (
             self.subclass._rm_period(e)
             for e in chain.from_iterable((mimetypes.types_map.keys(), OTHER_EXTS))
@@ -490,10 +650,22 @@ class Extensions:
         return {k: self._ext_tuple(k, self._method_matcher(k)) for k in all_other_exts}
 
     def _ext_tuple(self, *args, **kwargs) -> NamedTuple:
+        """
+        Creates a named tuple for a file extension and its loader method.
+
+        #### Returns:
+            - `NamedTuple`: A named tuple containing file extension and loader method.
+        """
         return self.subclass._get_subclass()(*args, **kwargs)
 
     @period_remover
     def _method_matcher(self, ext: str) -> Any:
+        """
+        Matches a file extension to its corresponding loader method.
+
+        #### Returns:
+            - `Any`: The loader method corresponding to the file extension.
+        """
         import_ext = (
             lambda m, p: self.subclass._import(module_name=m, package=p, boolean=True)
             or open
@@ -508,33 +680,69 @@ class Extensions:
             return self.defaults["empty"].loader_
 
     def get_loader(self, ext: str) -> Any:
+        """
+        Retrieves the loader method for a specific file extension.
+
+        #### Returns:
+            - `Any`: The loader method for the specified file extension.
+        """
         return self[ext]
 
     def is_supported(self, ext: str) -> bool:
+        """
+        Checks if a specific file extension is supported.
+
+        #### Returns:
+            - `bool`: True if the file extension is supported, False otherwise.
+        """
         return ext in self
 
     def has_loader(self, ext: str) -> bool:
+        """
+        Checks if a specific file extension has a loader method implemented.
+
+        #### Returns:
+            - `bool`: True if the file extension has a loader method, False otherwise.
+        """
         return self.get_loader(ext) is not open
 
     def customize(self, **kwargs: dict[str, Any, dict]) -> dict:
+        """
+        Customizes file extensions with new loader methods.
+
+        #### Args:
+            - `**kwargs` (dict): A dictionary containing file extensions and their new loader methods.
+
+        #### Returns:
+            - `dict`: A dictionary containing all supported file extensions after customization.
+        """
+        if not kwargs:
+            return
         new_exts = {}
         for ext, ext_values in kwargs.items():
-            l_method, l_kwargs = ext_values
+            ext = self.subclass._rm_period(ext)
+            l_method = next(iter(ext_values))
             l_params = self.subclass._get_params(l_method)
-            l_kwargs = {k: v for k, v in l_kwargs.items() if k in l_params}
-            new_exts[ext] = self._ext_tuple(
-                ext, lambda path: l_method(path, **l_kwargs)
-            )
+            l_kwargs = {
+                k: v
+                for i in ext_values.values()
+                for k, v in i.items()
+                if k in l_params.keys()
+            }
+            new_exts[ext] = self._ext_tuple(ext, partial(l_method, **l_kwargs))
         if new_exts:
-            new_exts.update({"empty": self.defaults["empty"]})
-        return new_exts
+            self.ALL_EXTS = {
+                **new_exts,
+                **{k: v for k, v in self.ALL_EXTS.items() if k not in new_exts},
+            }
+        return self.ALL_EXTS
 
 
 class DataLoader(_BaseLoader):
     """
     The DataLoader class is designed to dynamically load and manage data from specified directories.
 
-    Args:
+    #### Args:
         - `path` (str or Path): The path of the directory from which to load files.
         - `directories` (Iterable): An iterable of directories from which to all files.
         - `default_extensions` (Iterable): Default file extensions to be processed.
@@ -543,19 +751,22 @@ class DataLoader(_BaseLoader):
         - `verbose` (bool): Indicates whether to display verbose output.
         - `generator` (bool): Indicates whether to return the loaded files as a generator; otherwise, returns as a dictionary.
         - `total_workers` (int): Number of workers for parallel execution.
-        - `ext_loaders` (Iterable[str, Any, dict]): Dictionary containing extensions mapped to specified loaders.
+        - `ext_loaders` (dict[str, Any, dict[key-value]]): Dictionary containing extensions mapped to specified loaders.
+            - Example:
 
-    Methods:
+        ```py
+        ext_loaders = {"csv": {pd.read_csv: {param_key: param_value}}}
+        ```
+
+    #### Methods:
         - `load_file(file_path)`: Load a single file and return a named tuple containing path and contents.
         - `get_files(directory, defaults, verbose)`: Class method to get files from a directory based on default extensions.
         - `dir_files`: Load files from specified directories and return as a generator.
         - `files`: Get loaded files as a dictionary or generator, depending on the `generator` parameter.
 
-    Attributes:
+    #### Attributes:
         - `all_exts`: Dictionary containing file extensions and their corresponding loading methods.
-
-    Note:
-        The DataLoader class inherits from the _BaseLoader class, which provides common utility functions and features.
+        - `EXTENSIONS`: An instance of the Extensions class.
     """
 
     __slots__ = (
@@ -584,23 +795,31 @@ class DataLoader(_BaseLoader):
         total_workers: I = None,
         ext_loaders: dict = None,
     ):
+        self._verbose = verbose
+        logger.write_log = False if self._verbose else True
         self._path = path
         self._directories = directories
         self._default_exts = default_extensions
         self._full_posix = full_posix
         self._no_method = no_method
-        self._verbose = verbose
         self._generator = generator
         self._total_workers = self._check_workers(total_workers)
+        self._ext_loaders = ext_loaders
         self._files = None
         self._dir_files = None
-        self._ext_loaders = ext_loaders
-        logger.write_log = self._verbose
 
     @property
     def all_exts(self):
+        """
+        Dictionary containing file extensions and their corresponding loading methods.
+
+        #### Returns:
+            - `dict`: Dictionary containing file extensions and their corresponding loading methods.
+        """
         extensions = self.EXTENSIONS
-        return extensions.customize(**{}) or extensions
+        if not self._ext_loaders:
+            return extensions
+        return extensions.customize(**self._ext_loaders)
 
     def _ext_method(self, fp: P):
         fp = self._validate_file(fp)
@@ -608,7 +827,7 @@ class DataLoader(_BaseLoader):
         empty_method = self.all_exts["empty"]
         if suffix == empty_method.suffix_:
             loading_method = empty_method.loader_
-        elif self.all_exts.is_supported(suffix):
+        elif self.EXTENSIONS.is_supported(suffix):
             try:
                 loading_method = self.all_exts[suffix].loader_
             except AttributeError:
@@ -630,6 +849,15 @@ class DataLoader(_BaseLoader):
 
     @classmethod
     def load_file(cls, fp_or_dir: P):
+        """
+        Load a single file and return a named tuple containing path and contents.
+
+        #### Args:
+            - `fp_or_dir` (Path): File path or directory.
+
+        #### Returns:
+            - `NamedTuple`: Named tuple containing path and contents.
+        """
         return cls()._load_file(cls._validate_file(fp_or_dir))
 
     @classmethod
@@ -639,7 +867,19 @@ class DataLoader(_BaseLoader):
         defaults: Iterable = "",
         startswith: str = "",
         verbose: bool = False,
-    ):
+    ) -> Generator:
+        """
+        Get files from a directory based on default extensions.
+
+        #### Args:
+            - `directory` (Path): Directory path.
+            - `defaults` (Iterable): Default file extensions to be processed.
+            - `startswith` (str): File name prefix to filter files.
+            - `verbose` (bool): Indicates whether to display verbose output.
+
+        #### Returns:
+            - `Generator`: Files generator.
+        """
         validate_file = partial(cls._validate_file, verbose=verbose)
         directory = validate_file(directory)
         no_dirs = lambda p: p.is_file() and not p.is_dir()
@@ -676,7 +916,7 @@ class DataLoader(_BaseLoader):
             )
         return valid_exts
 
-    def _load_file(self, file_path: P):
+    def _load_file(self, file_path: P, **kwargs):
         fp_name = "/".join(file_path.parts[-2:])
         loading_method = open if self._no_method else self._ext_method(file_path)
         PathInfo = self._create_subclass(
@@ -686,22 +926,29 @@ class DataLoader(_BaseLoader):
         )
         with Timer(message=f"Executing {fp_name!r}", verbose=self._verbose):
             try:
-                p_contents = loading_method(file_path)
-            except tuple(self._all_errors()) as e:
+                p_contents = loading_method(file_path, **kwargs)
+            except tuple(
+                (
+                    PermissionError,
+                    UnicodeDecodeError,
+                    ParserError,
+                    DtypeWarning,
+                    OSError,
+                    EmptyDataError,
+                    JSONDecodeError,
+                    Exception,
+                )
+            ) as e:
                 DLoaderException(e, log_method=logger.warning)
                 p_contents = open(file_path)
             return PathInfo(path=file_path, contents=p_contents)
-
-    @classmethod
-    def _base_executor(cls, func: Any, y: Any, total_workers: int = None):
-        return cls._EXECUTOR(max_workers=total_workers).map(func, y)
 
     def _get_dir_files(self):
         if not self._directories:
             raise DLoaderException(
                 "The 'directories' parameter must be passed in for this type of execution."
             )
-        executor = partial(self._base_executor, total_workers=self._total_workers)
+        executor = partial(self.base_executor, total_workers=self._total_workers)
         directories = executor(
             partial(self._validate_file, verbose=self._verbose), self._directories
         )
@@ -716,15 +963,9 @@ class DataLoader(_BaseLoader):
         dir_files = executor(dl_func, directories)
         return chain.from_iterable(dir_files)
 
-    @cached_property
-    def dir_files(self):
-        if self._dir_files is None:
-            self._dir_files = self._get_dir_files()
-        return self.special_repr(self._dir_files)
-
     def _execute_path(self):
         try:
-            files = self._base_executor(
+            files = self.base_executor(
                 self._load_file, self._get_files, total_workers=self._total_workers
             )
         except Exception as error:
@@ -736,29 +977,65 @@ class DataLoader(_BaseLoader):
         )
 
     @cached_property
+    def dir_files(self):
+        """
+        Load files from specified directories.
+
+        #### Returns:
+            - `Generator`: Loaded files.
+        """
+        if self._dir_files is None:
+            self._dir_files = self._get_dir_files()
+        return self._repr_files(self._dir_files)
+
+    @cached_property
     def files(self):
+        """
+        Get loaded files as a dictionary or generator, depending on the `generator` parameter.
+
+        #### Returns:
+            - `_SpecialDictRepr` or `_SpecialGenRepr`: Loaded files.
+        """
         if self._files is None:
             self._files = self._execute_path()
-        return self.special_repr(self._files)
+        return self._repr_files(self._files)
 
+    def _repr_files(self, data: Iterable):
+        return self.special_repr(
+            data, module=self.__class__.__name__, generator=self._generator
+        )
+
+    @classmethod
     @cache
-    def special_repr(self, data: Iterable):
-        module = self.__class__.__name__
+    def special_repr(cls, data, module=None, generator=None):
+        """
+        Return a special representation of data.
+
+        #### Args:
+            - `data` (Any): Data to be represented.
+            - `module` (str): Module name.
+            - `generator` (bool): Indicates whether to return as a generator.
+
+        #### Returns:
+            - `_SpecialDictRepr` or `_SpecialGenRepr`: Special representation of data.
+        """
+        module = module or cls._cap_cls_name(cls)
         return (
             _SpecialDictRepr(data, module=module)
-            if not self._generator
+            if not generator
             else _SpecialGenRepr(data, module=module)
         )
 
 
 class DataMetrics(_BaseLoader):
     """
-    The DataMetrics class is designed to collect and export OS statistics for specified paths.
+    #### The DataMetrics class is designed to collect and export OS statistics for specified paths.
 
     #### Args:
         - `paths` (Iterable): Paths for which to gather statistics.
         - `file_name` (str): The file name to be used when exporting all files metadata stats.
         - `full_posix` (bool): Indicates whether to display full POSIX paths.
+        - `total_workers` (int): Number of workers for parallel execution.
 
     #### Methods:
         - `export_stats()`: Export gathered statistics to a JSON file.
@@ -783,10 +1060,10 @@ class DataMetrics(_BaseLoader):
         full_posix: bool = False,
         total_workers: I = None,
     ) -> None:
+        self._total_workers = self._check_workers(total_workers)
         self._files = self._validate_paths(files)
         self._file_name = file_name
         self._full_posix = full_posix
-        self._total_workers = self._check_workers(total_workers)
         self._all_stats = None
         self._total_files = 0
 
@@ -800,10 +1077,18 @@ class DataMetrics(_BaseLoader):
             for i, j in v.items()
             if i == "st_fsize"
         )
-        return self._bytes_converter(total_bytes)
+        return self.bytes_converter(total_bytes)
 
     def _validate_paths(self, paths: P):
-        return self._EXECUTOR().map(self._validate_file, paths)
+        """
+        Validates and returns the specified paths.
+
+        #### Args:
+            - `paths` (P): Paths to be validated.
+        """
+        return self.base_executor(
+            self._validate_file, paths, total_workers=self._total_workers
+        )
 
     def _get_stats(self):
         return {
@@ -812,15 +1097,26 @@ class DataMetrics(_BaseLoader):
         }
 
     @classmethod
-    def _bytes_converter(
+    def bytes_converter(
         cls,
         num,
         symbol_only=False,
         total_only=False,
-    ):
-        # XXX (KB)-1024, (MB)-1048576, (GB)-1073741824, (TB)-1099511627776
+    ) -> Union[float, namedtuple]:
+        """
+        Converts bytes to a human-readable format.
+
+        #### Args:
+            - `num`: Number of bytes.
+            - `symbol_only` (bool): Indicates whether to include only the unit symbol.
+            - `total_only` (bool): Indicates whether to return only the total size.
+
+        #### Returns:
+            - Union[float, NamedTuple]: float or NamedTuple containing stats with Human-readable format.
+        """
         if not num:
             return
+        # XXX (KB)-1024, (MB)-1048576, (GB)-1073741824, (TB)-1099511627776
         Stats = cls._get_subclass()
         conversions = dict(
             zip(
@@ -846,6 +1142,12 @@ class DataMetrics(_BaseLoader):
 
     @classmethod
     def _get_subclass(cls):
+        """
+        Returns the subclass for OS statistics.
+
+        #### Returns:
+            - Type[NamedTuple]: Subclass for OS statistics.
+        """
         return cls._create_subclass(
             "Stats",
             ("symbolic", "calculated_size", "bytes_size"),
@@ -856,7 +1158,7 @@ class DataMetrics(_BaseLoader):
     @classmethod
     def _os_stats(cls, path: P):
         Stats = cls._get_subclass()
-        bytes_converter = DataMetrics._bytes_converter
+        bytes_converter = DataMetrics.bytes_converter
         stats_results = os.stat_result(os.stat(path))
         disk_usage = shutil.disk_usage(path)._asdict()
         gattr = partial(getattr, stats_results)
@@ -877,23 +1179,43 @@ class DataMetrics(_BaseLoader):
         return os_stats
 
     def export_stats(self):
-        fp_name = self._file_name or "all_metadata_stats"
-        return self._exporter(fp_name, self.all_stats)
+        """Exports gathered statistics to a JSON file."""
+        if any((not self._file_name, not isinstance(self._file_name, (str, Path)))):
+            self._file_name = "all_metadata_stats"
+        return self._exporter(self._file_name, self.all_stats)
 
     @cached_property
     def all_stats(self):
+        """
+        Retrieves all gathered statistics as a dictionary.
+
+        #### Returns:
+            - `_SpecialDictRepr`(dict): A special dictionary representation of gathered statistics.
+        """
         if self._all_stats is None:
             self._all_stats = self._get_stats()
         return _SpecialDictRepr(self._all_stats, module=self.__class__.__name__)
 
     @cached_property
     def total_size(self):
+        """
+        Retrieves the total size of all specified paths in a NamedTuple with human-readable format.
+
+        #### Returns:
+            - `NamedTuple`: A NamedTuple containing the total stats of all specified paths with human-readable format.
+        """
         return self.__sizeof__()
 
     @cached_property
     def total_files(self):
+        """
+        Retrieves the total number of specified paths.
+
+        #### Returns:
+            - `int`: Total number of specified paths.
+        """
         if not self._total_files:
-            self._total_files = len(list(self.all_stats))
+            self._total_files = len(deque(self.all_stats))
         return self._total_files
 
 
@@ -909,6 +1231,9 @@ METADATA = {
     ),
     "doc": __doc__,
 }
+
+# a = DataLoader(path=Path(__file__).parents[2] / "tests/test_files", generator=False, full_posix=False, ext_loaders={"csv": {pd.read_csv: {"header": 39}}}).files
+# print(a["islamic_facts.csv"])
 
 __all__ = (
     "METADATA",
