@@ -138,7 +138,7 @@ class GetLogger:
         mode: str = "a",
     ) -> None:
         logging.getLogger().setLevel(logging.NOTSET)
-        fp_log = lambda n: Path(n).parent / Path(n).with_suffix(".log")
+        fp_log = lambda n: (Path(n).parent / n).with_suffix(".log")
         if name is None:
             file_name = fp_log("data_log")
         else:
@@ -961,6 +961,8 @@ class DataLoader(_BaseLoader):
                     f"ExtensionTypeError>>Check file {fp =!r} extensions. Failed to find a relative working loading method ({loading_method =!r}). Defaulting to {open!r}",
                     log_method=logger.warning,
                 )
+        else:
+            loading_method = open
         return loading_method
 
     @cached_property
@@ -1355,7 +1357,7 @@ class DataMetrics(_BaseLoader):
 
 # XXX Metadata Information
 METADATA = {
-    "version": (__version__ := "1.1.0"),
+    "version": (__version__ := "1.1.1"),
     "license": (__license__ := "Apache License, Version 2.0"),
     "url": (__url__ := "https://github.com/yousefabuz17/DataLoader"),
     "author": (__author__ := "Yousef Abuzahrieh <yousef.zahrieh17@gmail.com"),
