@@ -1299,6 +1299,7 @@ class DataMetrics(_BaseLoader):
         disk_usage = shutil.disk_usage(path)._asdict()
         gattr = partial(getattr, stats_results)
         volume_stats = {k: bytes_converter(v) for k, v in disk_usage.items()}
+        st_size = sys.float_info.epsilon if not stats_results.st_size else stats_results.st_size
         os_stats = {
             **{
                 attr: bytes_converter(gattr(attr))
@@ -1307,7 +1308,7 @@ class DataMetrics(_BaseLoader):
             },
             **{
                 "st_fsize": Stats(
-                    *bytes_converter(stats_results.st_size, symbol_only=True)
+                    *bytes_converter(st_size, symbol_only=True)
                 ),
                 "st_vsize": volume_stats,
             },
@@ -1357,7 +1358,7 @@ class DataMetrics(_BaseLoader):
 
 # XXX Metadata Information
 METADATA = {
-    "version": (__version__ := "1.1.1"),
+    "version": (__version__ := "1.1.2"),
     "license": (__license__ := "Apache License, Version 2.0"),
     "url": (__url__ := "https://github.com/yousefabuz17/DataLoader"),
     "author": (__author__ := "Yousef Abuzahrieh <yousef.zahrieh17@gmail.com"),
