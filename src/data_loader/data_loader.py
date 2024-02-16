@@ -17,9 +17,16 @@ The main components include the `DataLoader` class, responsible for loading file
         - `verbose` (bool): Display verbose output.
         - `generator` (bool): Return loaded files as a generator.
         - `total_workers` (int): Number of workers for parallel execution.
+        - `log` (Logger): Configured logger instance for logging messages.
+        - `ext_loaders` (dict[str, Any, dict[key-value]]): Dictionary containing extensions mapped to specified loaders.
+            - Example:
+
+        ```py
+        ext_loaders = {"csv": {pd.read_csv: {param_key: param_value}}}
+        ```
     - Methods:
         - `load_file`: Load a single file.
-        - `get_files`: Class method to get files from a directory based on default extensions.
+        - `get_files`: Class method to get files and/or directories from a directory based on default extensions.
         - `dir_files` (property): Load files from specified directories.
         - `files` (property): Load files from specified path.
 
@@ -32,7 +39,9 @@ The main components include the `DataLoader` class, responsible for loading file
         - `total_workers` (int): Number of workers for parallel execution.
     - Methods:
         - `export_stats()`: Export gathered statistics to a JSON file.
-        - `all_stats`: Get all gathered statistics.
+        - `all_stats` (property): Get all gathered statistics as a dictionary.
+        - `total_size` (property): Retrieve the total size of all specified paths.
+        - `total_files` (property): Retrieves the total number of specified paths.
 
 ## Important Notes and Features:
 - The project includes a custom exception class `DLoaderException` for handling DataLoader-specific exceptions.
@@ -79,43 +88,105 @@ P = TypeVar("P", str, Path)
 I = TypeVar("I", int, float)
 
 
-def get_logger(
-    *,
-    name: str = __name__,
-    level: int = logging.DEBUG,
-    formatter_kwgs: dict = None,
-    handler_kwgs: dict = None,
-    mode: str = "a",
-    write_log: bool = True,
-) -> Logger:
-    logging.getLogger().setLevel(logging.NOTSET)
-    logger_ = logging.getLogger(name)
+class GetLogger:
+    """
+    Get a configured logger instance for logging messages.
 
-    if logging.getLevelName(level):
-        logger_.setLevel(level=level)
+    #### Args:
+        - `name` (str, optional): The name of the logger. Defaults to the name of the calling module.
+        - `level` (int, optional): The logging level. Defaults to logging.DEBUG.
+        - `formatter_kwgs` (dict, optional): Additional keyword arguments to pass to the log formatter.
+        - `handler_kwgs` (dict, optional): Additional keyword arguments to pass to the log handler.
+        - `mode` (str, optional): The file mode to open the log file in when writing to file. Defaults to "a" (append).
 
-    file_name = Path(__file__).with_suffix(".log")
-    formatter_kwgs_ = {
-        **{
-            "fmt": "[%(asctime)s][LOG %(levelname)s]:%(message)s",
-            "datefmt": "%Y-%m-%d %I:%M:%S %p",
-        },
-        **(formatter_kwgs or {}),
-    }
-    handler_kwgs_ = {**{"filename": file_name, "mode": mode}, **(handler_kwgs or {})}
+    #### Attributes:
+        - `refresher` (callable): A method to refresh the log file.
+        - `set_verbose` (callable): A method to set the verbosity of the logger.
 
-    formatter = logging.Formatter(**formatter_kwgs_)
+    #### Returns:
+        - Logger: A configured logger instance.
 
-    if write_log or level == logging.DEBUG:
-        stream_handler = logging.FileHandler(**handler_kwgs_)
-    else:
-        stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    logger_.addHandler(stream_handler)
-    return logger_
+    #### Examples:
+        ```python
+        # Example 1: Create a logger with default settings
+        logger = GetLogger().get_logger()
+
+        # Example 2: Create a logger with custom settings
+        logger = GetLogger(name='custom_logger', level=logging.INFO, verbose=True).get_logger()
+
+        # Example 3: Initiate verbosity.
+        logger = GetLogger().get_logger()
+        logger.set_verbose(True)
+        CustomException("Error Message") # Prints to the console
+
+        # Example 4: Verbosity is disabled
+        logger = GetLogger().get_logger()
+        CustomException("Error Message") # Writes to the log file
+        ```
+
+    #### Note:
+        - This function sets up a logger with a file handler and an optional stream (console) handler for verbose logging.
+        - If `verbose` is True, log messages will be printed to the console instead of being written to a file.
+    """
+
+    def __init__(
+        self,
+        name: str = None,
+        level: int = logging.DEBUG,
+        formatter_kwgs: dict = None,
+        handler_kwgs: dict = None,
+        mode: str = "a",
+    ) -> None:
+        logging.getLogger().setLevel(logging.NOTSET)
+        fp_log = lambda n: Path(n).parent / Path(n).with_suffix(".log")
+        if name is None:
+            file_name = fp_log("data_log")
+        else:
+            file_name = fp_log(name)
+        self.logger_ = logging.getLogger(name)
+        if logging.getLevelName(level):
+            self.logger_.setLevel(level=level)
+
+        formatter_kwgs_ = {
+            **{
+                "fmt": "[%(asctime)s][LOG %(levelname)s]:%(message)s",
+                "datefmt": "%Y-%m-%d %I:%M:%S %p",
+            },
+            **(formatter_kwgs or {}),
+        }
+        self.handler_kwgs_ = {
+            **{"filename": file_name, "mode": mode},
+            **(handler_kwgs or {}),
+        }
+
+        self.formatter = logging.Formatter(**formatter_kwgs_)
+
+        self.logger_.refresher = self.refresher
+        self.stream_handler = logging.FileHandler(**self.handler_kwgs_)
+        self.stream_handler.setFormatter(self.formatter)
+        self.logger_.addHandler(self.stream_handler)
+        self.logger_.set_verbose = self.set_verbose
+
+    def refresher(self, refresh: bool):
+        if refresh:
+            self.handler_kwgs_["mode"] = "w"
+
+    def set_verbose(self, verbose: bool = False):
+        """Set the verbosity of the logger."""
+        if verbose:
+            stream_handler = logging.StreamHandler()
+        else:
+            stream_handler = logging.FileHandler(**self.handler_kwgs_)
+        stream_handler.setFormatter(self.formatter)
+        self.logger_.handlers = [stream_handler]
+
+    @property
+    def logger(self) -> Logger:
+        """Get the configured logger instance."""
+        return self.logger_
 
 
-logger = get_logger(level=logging.INFO, write_log=True)
+logger = GetLogger(name=__file__, level=logging.INFO).logger
 
 
 class DLoaderException(BaseException):
@@ -124,6 +195,8 @@ class DLoaderException(BaseException):
 
     #### Attributes:
         - `log_method`: Logging method to use when the exception is raised.
+        - `verbose`: Indicates whether to display verbose output.
+        - `refresh`: Indicates whether to refresh the log file.
 
     #### Args:
         - `*args` (object): Additional arguments.
@@ -149,6 +222,7 @@ class Timer:
     #### Args:
         - `message` (str): Custom message to display before the execution time.
         - `verbose` (bool): Indicates whether to display the message and execution time.
+        - `log` (Logger): A configured logger instance for logging messages.
 
     #### Attributes:
         - `_T_START` (float): Start time.
@@ -161,8 +235,17 @@ class Timer:
 
     message: str = field(default="")
     verbose: bool = field(default=False)
+    log: Logger = field(default=None)
     _T_START: float = field(init=False, repr=False, default_factory=lambda: time)
     _T_END: float = field(init=False, repr=False, default_factory=lambda: time)
+
+    def __call__(self, cls_method):
+        @wraps(cls_method)
+        def wrapper(*args, **kwargs):
+            with self:
+                return cls_method(*args, **kwargs)
+
+        return wrapper
 
     def __enter__(self):
         """
@@ -178,14 +261,33 @@ class Timer:
         """
         Called when exiting the context block, calculates and displays the execution time.
         """
+        if not isinstance(self.log, Logger):
+            raise Exception(f"The log provided is not a valid Logger type.")
         elapsed_time = self._T_END() - self._T_START
         minutes, seconds = divmod(elapsed_time, 60)
-        if self.verbose:
-            if self.message:
-                print(f"\033[33m{self.message!r}\033[0m")
-            print(
-                f"\033[32mExecution Time:\033[0m {minutes:.0f} minutes and {seconds:.5f} seconds."
+        output = (
+            print
+            if self.verbose
+            else partial(DLoaderException, log_method=self.log.info)
+        )
+        if self.message:
+            output(f"\033[33m{self.message!r}\033[0m")
+        output(
+            f"\033[32mExecution Time:\033[0m {minutes:.0f} minutes and {seconds:.5f} seconds."
+        )
+
+    def time_func(cls_method):
+        @wraps(cls_method)
+        def wrapper(cls, *args, **kwargs):
+            message = f" Executing .{cls_method.__name__} ".upper().center(
+                cls._terminal_size().columns - 2, "="
             )
+            verbose = kwargs.get("verbose", False)
+            log = kwargs.get("log", logger)
+            with Timer(message=message, verbose=verbose, log=log):
+                return cls_method(cls, *args, **kwargs)
+
+        return wrapper
 
 
 class _BaseLoader:
@@ -293,24 +395,25 @@ class _BaseLoader:
     def _validate_file(
         cls, file_path: Union[str, Path], directory: bool = False, verbose: bool = False
     ) -> Path:
+        DLException = partial(DLoaderException, log_method=logger.critical)
         try:
             fp = Path(file_path)
         except TypeError as t_error:
-            raise DLoaderException(t_error)
+            raise DLException(t_error)
 
         if not fp:
-            raise DLoaderException(f"File arugment must not be empty: {fp =!r}")
+            raise DLException(f"File arugment must not be empty: {fp =!r}")
         elif not fp.exists():
-            raise DLoaderException(
+            raise DLException(
                 f"File does not exist: {fp =!r}. Please check system files."
             )
         elif all((not fp.is_file(), not fp.is_absolute())):
-            raise DLoaderException(
-                f"Invalid path type: {fp =!r}. Path must be a file type."
+            raise DLException(
+                f"Invalid path type: {fp = !r}. Path must be a file type."
             )
         elif directory and fp.is_dir():
-            raise DLoaderException(
-                f"File is a directory: {fp =!r}. Argument must be a valid file."
+            raise DLException(
+                f"File is a directory: {fp = !r}. Argument must be a valid file."
             )
         elif any(
             (
@@ -318,8 +421,9 @@ class _BaseLoader:
                 fp.stem.startswith((".", "_")),
             )
         ):
-            if verbose:
-                DLoaderException(f"Skipping {fp.name =!r}", log_method=logger.warning)
+            DLoaderException(
+                f"Skipping {fp.name = !r}", log_method=logger.warning
+            )
             return
         return fp
 
@@ -348,7 +452,8 @@ class _BaseLoader:
             return workers
         raise DLoaderException(
             f"The 'total_workers' parameter must be of type {int!r} or {float!r}"
-            f"\n>>>Workers Input: {workers =!r}"
+            f"\n>>>Workers Input: {workers =!r}",
+            log_method=logger.critical,
         )
 
     @classmethod
@@ -363,14 +468,19 @@ class _BaseLoader:
         values: Iterable = None,
         field_doc: str = "",
     ) -> NamedTuple:
-        default_vals = defaults or ([None] * len(field_names))
+        if defaults and len(defaults) != len(field_names):
+            raise DLoaderException(
+                f"The number of default values must match the number of field_names."
+            )
+        else:
+            defaults = [None] * len(field_names)
 
         field_docs = field_doc or "Field documentation not provided."
         module_name = module or typename
         new_tuple = namedtuple(
             typename=typename,
             field_names=field_names,
-            defaults=default_vals,
+            defaults=defaults,
             module=module_name,
         )
         setattr(new_tuple, "__doc__", field_docs)
@@ -676,6 +786,8 @@ class Extensions:
             return lambda path: self.subclass._read_config(path)
         elif ext == "pdf":
             return import_ext("pdfminer.high_level", "extract_pages")
+        elif ext == "md":
+            return import_ext("markdown2", "markdown")
         else:
             return self.defaults["empty"].loader_
 
@@ -751,6 +863,7 @@ class DataLoader(_BaseLoader):
         - `verbose` (bool): Indicates whether to display verbose output.
         - `generator` (bool): Indicates whether to return the loaded files as a generator; otherwise, returns as a dictionary.
         - `total_workers` (int): Number of workers for parallel execution.
+        - `log` (Logger): A configured logger instance for logging messages.
         - `ext_loaders` (dict[str, Any, dict[key-value]]): Dictionary containing extensions mapped to specified loaders.
             - Example:
 
@@ -779,10 +892,12 @@ class DataLoader(_BaseLoader):
         "_verbose",
         "_generator",
         "_total_workers",
+        "_log",
         "_ext_loaders",
     )
     EXTENSIONS = Extensions()
 
+    @Timer.time_func
     def __init__(
         self,
         path: P = None,
@@ -794,9 +909,11 @@ class DataLoader(_BaseLoader):
         generator: bool = True,
         total_workers: I = None,
         ext_loaders: dict = None,
+        log: Logger = None,
     ):
         self._verbose = verbose
-        logger.write_log = False if self._verbose else True
+        self._log = log
+        self._set_log()
         self._path = path
         self._directories = directories
         self._default_exts = default_extensions
@@ -807,6 +924,15 @@ class DataLoader(_BaseLoader):
         self._ext_loaders = ext_loaders
         self._files = None
         self._dir_files = None
+
+    def _set_log(self):
+        if self._log and isinstance(self._log, Logger):
+            global logger
+            logger = self._log
+        if hasattr(logger, "set_verbose"):
+            logger.set_verbose(self._verbose)
+        if hasattr(logger, "refresher"):
+            logger.refresher(self._verbose)
 
     @property
     def all_exts(self):
@@ -844,7 +970,7 @@ class DataLoader(_BaseLoader):
             self.all_exts["empty"].suffix_
             if not self._default_exts
             else self._validate_exts(self._default_exts),
-            self._verbose,
+            self._verbose
         )
 
     @classmethod
@@ -861,12 +987,16 @@ class DataLoader(_BaseLoader):
         return cls()._load_file(cls._validate_file(fp_or_dir))
 
     @classmethod
+    @Timer.time_func
     def get_files(
         cls,
         directory: P,
         defaults: Iterable = "",
         startswith: str = "",
         verbose: bool = False,
+        files_only: bool = True,
+        generator: bool = True,
+        log: Logger = None,
     ) -> Generator:
         """
         Get files from a directory based on default extensions.
@@ -885,13 +1015,18 @@ class DataLoader(_BaseLoader):
         no_dirs = lambda p: p.is_file() and not p.is_dir()
         ext_pattern = partial(cls._compiler, defaults, escape_k=False)
         filter_files = lambda fp: all(
-            (no_dirs(fp), ext_pattern(cls._rm_period(fp.suffix)), validate_file(fp))
+            (
+                no_dirs(fp) if files_only else True,
+                ext_pattern(cls._rm_period(fp.suffix)),
+                validate_file(fp),
+            )
         )
-        return (
+        validated_files = (
             p
             for p in directory.iterdir()
-            if p.name.startswith(f"{startswith}") and startswith or filter_files(p)
+            if (p.name.startswith(f"{startswith}") and startswith) or filter_files(p)
         )
+        return deque(validated_files) if not generator else validated_files
 
     def _validate_exts(self, extensions: Iterable):
         if extensions is None:
@@ -917,31 +1052,29 @@ class DataLoader(_BaseLoader):
         return valid_exts
 
     def _load_file(self, file_path: P, **kwargs):
-        fp_name = "/".join(file_path.parts[-2:])
         loading_method = open if self._no_method else self._ext_method(file_path)
         PathInfo = self._create_subclass(
             "PathInfo",
             ("path", "contents"),
             field_doc="Primary NamedTuple containing the path and its contents.",
         )
-        with Timer(message=f"Executing {fp_name!r}", verbose=self._verbose):
-            try:
-                p_contents = loading_method(file_path, **kwargs)
-            except tuple(
-                (
-                    PermissionError,
-                    UnicodeDecodeError,
-                    ParserError,
-                    DtypeWarning,
-                    OSError,
-                    EmptyDataError,
-                    JSONDecodeError,
-                    Exception,
-                )
-            ) as e:
-                DLoaderException(e, log_method=logger.warning)
-                p_contents = open(file_path)
-            return PathInfo(path=file_path, contents=p_contents)
+        try:
+            p_contents = loading_method(file_path, **kwargs)
+        except tuple(
+            (
+                PermissionError,
+                UnicodeDecodeError,
+                ParserError,
+                DtypeWarning,
+                OSError,
+                EmptyDataError,
+                JSONDecodeError,
+                Exception,
+            )
+        ) as e:
+            DLoaderException(e, log_method=logger.warning)
+            p_contents = open(file_path)
+        return PathInfo(path=file_path, contents=p_contents)
 
     def _get_dir_files(self):
         if not self._directories:
@@ -1041,6 +1174,7 @@ class DataMetrics(_BaseLoader):
         - `export_stats()`: Export gathered statistics to a JSON file.
         - `all_stats` (property): Get all gathered statistics as a dictionary.
         - `total_size` (property): Retrieve the total size of all specified paths.
+        - `total_files` (property): Retrieves the total number of specified paths.
     """
 
     __slots__ = (
@@ -1073,7 +1207,7 @@ class DataMetrics(_BaseLoader):
     def __sizeof__(self) -> int:
         total_bytes = sum(
             j.bytes_size
-            for _k, v in self.all_stats.items()
+            for v in self.all_stats.values()
             for i, j in v.items()
             if i == "st_fsize"
         )
@@ -1221,7 +1355,7 @@ class DataMetrics(_BaseLoader):
 
 # XXX Metadata Information
 METADATA = {
-    "version": (__version__ := "1.0.9"),
+    "version": (__version__ := "1.1.0"),
     "license": (__license__ := "Apache License, Version 2.0"),
     "url": (__url__ := "https://github.com/yousefabuz17/DataLoader"),
     "author": (__author__ := "Yousef Abuzahrieh <yousef.zahrieh17@gmail.com"),
@@ -1232,8 +1366,6 @@ METADATA = {
     "doc": __doc__,
 }
 
-# a = DataLoader(path=Path(__file__).parents[2] / "tests/test_files", generator=False, full_posix=False, ext_loaders={"csv": {pd.read_csv: {"header": 39}}}).files
-# print(a["islamic_facts.csv"])
 
 __all__ = (
     "METADATA",
@@ -1241,6 +1373,7 @@ __all__ = (
     "DataMetrics",
     "DLoaderException",
     "Extensions",
+    "GetLogger",
     "_SpecialDictRepr",
     "_SpecialGenRepr",
 )

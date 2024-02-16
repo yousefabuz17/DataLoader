@@ -7,18 +7,23 @@ sys.path.append(
         (PY_TESTS_FILE := Path(__file__)).resolve().parents[1] / "src/data_loader"
     ).as_posix()
 )
-from data_loader import DataLoader, DataMetrics, DLoaderException
+from data_loader import DataLoader, DataMetrics, DLoaderException, GetLogger
 
 
-get_files = lambda **kwargs: DataLoader(**kwargs).files
-get_dir_files = lambda **kwargs: DataLoader(**kwargs).dir_files
+logger = GetLogger(name=(PY_TESTS_FILE.parent / PY_TESTS_FILE.stem).as_posix()).logger
+get_files = lambda **kwargs: DataLoader(log=logger, **kwargs).files
+get_dir_files = lambda **kwargs: DataLoader(log=logger, **kwargs).dir_files
 get_paths_exts = lambda func: (DataLoader._rm_period(Path(p).suffix) for p in func)
 Import = lambda m, p: DataLoader._import(module_name=m, package=p)
 TEST_DATAMETRICS = PY_TESTS_FILE.parent / "test_datametrics"
 TEST_FILES = PY_TESTS_FILE.parent / "test_files"
-TEST_DIRS = list(
-    DataLoader.get_files(directory=TEST_FILES / "test_directories", startswith="test")
+TEST_DIRS = DataLoader.get_files(
+    directory=TEST_FILES / "test_directories",
+    startswith="test",
+    generator=False,
+    log=logger,
 )
+
 TEST_FILES_COUNT, TEST_DIRS_COUNT = 11, 25
 
 

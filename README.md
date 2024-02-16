@@ -27,10 +27,17 @@
     - [Key Features](#key-features-2)
     - [Parameters](#parameters-2)
     - [Class Methods](#class-methods)
+  - [GetLogger](#getlogger)
+    - [Overview](#overview-1)
+    - [Parameters](#parameters-3)
+    - [Attributes](#attributes)
+    - [Returns](#returns)
+    - [Note](#note)
 - [Usage](#usage)
   - [DataLoader Usage](#dataloader-usage)
   - [DataMetrics Usage](#datametrics-usage)
   - [Extensions Usage](#extensions-usage)
+  - [GetLogger Usage](#getlogger-usage)
 - [Output Example](#output-example)
 - [Future Updates](#future-updates)
 - [Feedback](#feedback)
@@ -80,6 +87,9 @@ The `DataLoader` class is specifically designed for loading and processing data 
   - **Dynamic Loading**: Load files from a single directory or merge files from multiple directories.
   - **Flexible Configuration**: Set various parameters, such as default file extensions, full POSIX paths, method loader execution, and more.
   - **Parallel Execution**: Leverage parallel execution with the `total_workers` parameter to enhance performance.
+  - **Verbose Output**: Display verbose output to track the loading process.
+    - If enabled, the `verbose` parameter will display the loading process for each file.
+    - If disabled, the `verbose` parameter will write the loading process for each file to a log file.
   - **Custom Loaders**: Implement custom loaders for specific file extensions.
     - Please note that at the moment, the loading methods kwargs will be uniformly applied to all files with the specified extension.
     - Additionally, the first parameter of the loader method is automatically passed and should be skipped. If passed, the loader will fail and return the contents of the file as `TextIOWrapper`.
@@ -94,6 +104,7 @@ The `DataLoader` class is specifically designed for loading and processing data 
   - `verbose` (bool): Indicates whether to display verbose output.
   - `generator` (bool): Indicates whether to return the loaded files as a generator; otherwise, returns as a dictionary.
   - `total_workers` (int): Number of workers for parallel execution.
+  - `log` (Logger): A configured logger instance for logging messages. (Refer to the [GetLogger](#getlogger) class for more information on how to create a logger instance using the `GetLogger` class.)
   - `ext_loaders` (dict[str, Any, dict[key-value]]): Dictionary containing extensions mapped to specified loaders. (Refer to the [Extensions](#extensions) class for more information)
 
 
@@ -165,11 +176,36 @@ The `Extensions` class is a utility that provides a set of default file extensio
       ```
 ---
 
+## `GetLogger`
+## Overview
+The `GetLogger` class is a utility that provides a method to get a configured logger instance for logging messages. It is designed to be user-friendly and easy to integrate into your projects.
+
+## Parameters
+
+- `name` (str, optional): The name of the logger. Defaults to the name of the calling module.
+- `level` (int, optional): The logging level. Defaults to logging.DEBUG.
+- `formatter_kwgs` (dict, optional): Additional keyword arguments for the log formatter.
+- `handler_kwgs` (dict, optional): Additional keyword arguments for the log handler.
+- `mode` (str, optional): The file mode for opening the log file. Defaults to "a" (append).
+
+## Attributes
+- `refresher` (callable): A method to refresh the log file.
+- `set_verbose` (callable): A method to set the verbosity of the logger.
+
+## Returns
+- Logger: A configured logger instance.
+
+## Notes
+- This function sets up a logger with a file handler and an optional stream (console) handler for verbose logging.
+- If `verbose` is True, log messages will be printed to the console instead of being written to a file.
+
+---
+
 # Usage:
 
 ## `DataLoader` Usage
   ```py
-  from dynamic_loader import DataLoader
+  from data_loader import DataLoader
   # Load files from a single directory
   dl = DataLoader(path="path/to/directory")
   print(dl.files) # Loaded files from a single directory (returns as a generator object)
@@ -185,6 +221,7 @@ The `Extensions` class is a utility that provides a set of default file extensio
   # Parameter Configuration
   dl = DataLoader(path="path/to/directory", total_workers=200, default_extensions=[".csv", ".json"], generator=False, verbose=True)
   print(dl.files) # Loaded files from a single directory with specified parameters (returns as a dictionary (_SpecialGenRepr) object)
+  print(dl.files.reset()) # Reset the _SpecialDictRepr object to its original state (dictionary object)
 
   dl = DataLoader(directories=["path/to/directory1", "path/to/directory2"], total_workers=200, default_extensions=["csv", "json"], generator=False, verbose=True)
   # Load files from a single directory with specified extensions and parameters (returns as a dictionary (_SpecialGenRepr) object)
@@ -196,7 +233,7 @@ The `Extensions` class is a utility that provides a set of default file extensio
 
 ## `DataMetrics` Usage
   ```py
-  from dynamic_loader import DataMetrics
+  from data_loader import DataMetrics
   # Retrieve statistics for all paths
   dm = DataMetrics(files=["path/to/directory1", "path/to/directory2"])
   print(dm.all_stats) # Retrieve statistics for all paths
@@ -210,7 +247,7 @@ The `Extensions` class is a utility that provides a set of default file extensio
 
 ## `Extensions` Usage
   ```py
-  from dynamic_loader import Extensions
+  from data_loader import Extensions
   ALL_EXTS = Extensions() # Initializes the Extensions class or use the default instance Extensions().ALL_EXTS
   print("csv" in ALL_EXTS) # True
   print(ALL_EXTS.get_loader("csv")) # <function read_csv at 0x7f8e3e3e3d30>
@@ -225,6 +262,29 @@ The `Extensions` class is a utility that provides a set of default file extensio
   
   print(ALL_EXTS.get_loader("docx")) # <function <lambda> at 0x7f8e3e3e3d30>
   ```
+---
+
+### `GetLogger` Usage:
+
+```python
+# Create a logger with default settings
+from data_loader import GetLogger
+logger = GetLogger().logger
+logger.info("This is an info message")  # Writes to the log file
+
+# Create a logger with custom settings
+logger = GetLogger(name='custom_logger', level=logging.INFO, verbose=True).logger
+logger.info("This is an info message")  # Prints to the console
+
+# Initiate verbosity
+logger = GetLogger().logger
+logger.set_verbose(True)
+CustomException("Error Message")  # Prints to the console
+
+# Disable verbosity
+logger.set_verbose(False).logger
+CustomException("Error Message")  # Writes to the log file
+```
 ---
 
 # Output Example
@@ -256,15 +316,16 @@ print(dm.total_files) # Calculate the total number of files in all paths
 
 ---
 # Future Updates
-- [x] Implement support for specifying what loader method to use for a specific file extension.
-  - [x] Add support for loader method kwarg parameters.
-- [x] Add support for customizing the `Extensions` class with new file extensions and its respective loader methods.
-- [ ] Implement support for specifying what loader method to use for specific files efficiently rather than uniformly.
-- [ ] Add support for specifying what loader method to use for a specific file.
-- [ ] Allow special representation of the loaded files to show all contents rather than the type of the data.
-- [ ] Add more tests to cover all implemented features.
-  - [ ] Add test for `ext_loaders` parameter.
-- [ ] Add loading method and kwargs support for `load_file` class method.
+- [x] ~~Implement support for specifying what loader method to use for a specific file extension.~~
+  - [x] ~~Add support for loader method kwarg parameters.~~
+- [x] ~~Add support for customizing the `Extensions` class with new file extensions and its respective loader methods.~~
+- [ ] Include the ability to specify loader methods for individual files, providing greater flexibility.
+- [ ] Intend to add an option for special representation of loaded files, displaying all contents rather than just the data type.
+- [ ] Add more comprehensive tests covering all implemented features.
+  - [ ] Include specific tests for the `ext_loaders` parameter.
+- [ ] Add loading method keyword argument support for the `load_file` class method.
+  - [ ] Implement a more efficient method for specifying loader methods kwargs for specific files rather than applying them uniformly.
+- [x] Add support for custom loggers, allowing users to use their preferred logging configuration.
 
 ---
 # Feedback
@@ -276,8 +337,8 @@ Feedback is crucial for the improvement of the `DataLoader` project. If you enco
 2. **Contact**: Reach out to the project maintainer via the following:
 
 ### Contact Information
-    - [Discord](https://discord.com/users/581590351165259793)
-    - [Gmail](yousefzahrieh17@gmail.com)
+- [Discord](https://discord.com/users/581590351165259793)
+- [Gmail](yousefzahrieh17@gmail.com)
 
 > *Your feedback and contributions play a significant role in making the `DataLoader` project more robust and valuable for the community. Thank you for being part of this endeavor!*
 
