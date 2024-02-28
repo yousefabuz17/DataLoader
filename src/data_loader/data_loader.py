@@ -81,8 +81,6 @@ from typing import Any, Generator, Iterable, Iterator, NamedTuple, TypeVar, Unio
 from json.decoder import JSONDecodeError
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
 
-
-from metadata import METADATA
 from other_extensions import OTHER_EXTS
 
 
@@ -1509,6 +1507,20 @@ class DataMetrics(_BaseLoader):
 if __name__ == "__main__":
     current_dir = DataLoader(path=Path(__file__).parent, generator=False, full_posix=False)
     print(current_dir.files)
+
+
+# XXX Metadata Information
+METADATA = {
+    "version": (__version__ := "1.1.22"),
+    "license": (__license__ := "Apache License, Version 2.0"),
+    "url": (__url__ := "https://github.com/yousefabuz17/DataLoader"),
+    "author": (__author__ := "Yousef Abuzahrieh <yousef.zahrieh17@gmail.com"),
+    "copyright": (__copyright__ := f"Copyright © 2024, {__author__}"),
+    "summary": (
+        __summary__ := "Python utility designed to enable dynamic loading and processing of files."
+    ),
+    "doc": __doc__,
+}
 
 
 __all__ = (
