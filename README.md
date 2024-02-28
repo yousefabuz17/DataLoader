@@ -34,7 +34,14 @@
     - [Returns](#returns)
     - [Note](#note)
 - [Usage](#usage)
-  - [DataLoader Usage](#dataloader-usage)
+  - [DataLoader Usage](#dataloader-usage-examples)
+    - [Load Files from a Single Directory as a Generator](#load-files-from-a-single-directory-as-a-generator)
+    - [Load Files from a Single Directory as a Dictionary (Custom-Repr)](#load-files-from-a-single-directory-as-a-dictionary-custom-repr)
+    - [Load Files from Multiple Directories](#load-files-from-multiple-directories)
+    - [Load Files with Default Extensions](#load-files-with-default-extensions)
+    - [Retrieve Data for a Specific File](#retrieve-data-for-a-specific-file)
+    - [Load Files with Custom Loader Methods](#load-files-with-custom-loader-methods)
+    - [Specify a Custom Logger](#specify-a-custom-logger)
   - [DataMetrics Usage](#datametrics-usage)
   - [Extensions Usage](#extensions-usage)
   - [GetLogger Usage](#getlogger-usage)
@@ -203,32 +210,118 @@ The `GetLogger` class is a utility that provides a method to get a configured lo
 
 # Usage:
 
-## `DataLoader` Usage
-  ```py
-  from data_loader import DataLoader
-  # Load files from a single directory
-  dl = DataLoader(path="path/to/directory")
-  print(dl.files) # Loaded files from a single directory (returns as a generator object)
+## `DataLoader` Usage Examples
 
-  # Load files from multiple directories
-  dl = DataLoader(directories=["path/to/directory1", "path/to/directory2"])
-  print(dl.dir_files) # Loaded files from specified directories (returns as a generator object)
+### Load Files from a Single Directory as a Generator
 
-  # Load a specific file
-  file = DataLoader.load_file("path/to/file")
-  print(file) # Loaded file
+```python
+from data_loader import DataLoader
 
-  # Parameter Configuration
-  dl = DataLoader(path="path/to/directory", total_workers=200, default_extensions=[".csv", ".json"], generator=False, verbose=True)
-  print(dl.files) # Loaded files from a single directory with specified parameters (returns as a dictionary (_SpecialGenRepr) object)
-  print(dl.files.reset()) # Reset the _SpecialDictRepr object to its original state (dictionary object)
+# Load all files with a specified path (directory) as a Generator
+dl_gen = DataLoader(path="path/to/directory")
+dl_files_gen = dl_gen.files
+print(dl_files_gen)
+# Output:
+# <generator object DataLoader.files.<key-value> at 0x1163f4ba0>
+```
 
-  dl = DataLoader(directories=["path/to/directory1", "path/to/directory2"], total_workers=200, default_extensions=["csv", "json"], generator=False, verbose=True)
-  # Load files from a single directory with specified extensions and parameters (returns as a dictionary (_SpecialGenRepr) object)
+### Load Files from a Single Directory as a Dictionary (Custom-Repr)
 
-  dl = DataLoader(directories=["path/to/directory1", "path/to/directory2"], ext_loaders={"csv": {pd.read_csv: {"header": 10}}, "json": {pd.read_json: {}}})
-  # Loaded files from specified directories with specified loader methods (returns as a generator (_SpecialGenRepr) object)
-  ```
+```python
+from data_loader import DataLoader
+
+# Load all files with a specified path (directory) as a Dictionary (Custom-Repr)
+# Disabling 'generator' and 'full_posix' for displaying purposes.
+dl_dict = DataLoader(path="path/to/directory", generator=False, full_posix=False)
+dl_files_dict = dl_dict.files
+print(dl_files_dict)
+# Output:
+# DataLoader((LICENSE.md, <TextIOWrapper>),
+#             (requirements.txt, <Str>),
+#             (Makefile, <Str>),
+#             ...
+#             (space_4.txt, <Str>))
+```
+
+### Load Files from Multiple Directories
+
+```python
+from data_loader import DataLoader
+
+# Load all files from multiple directories
+# Disabling 'generator' and 'full_posix' for displaying purposes.
+dl = DataLoader(directories=["path/to/dir1", "path/to/dir2"], generator=False, full_posix=False)
+dl_dir_files = dl.dir_files
+print(dl_dir_files)
+# Output:
+# DataLoader((file1.txt, <Str>),
+#             (file2.txt, <Str>),
+#             (file3.txt, <Str>),
+#             ...
+#             (fileN.txt, <Str>))
+```
+
+### Load Files with Default Extensions
+
+```python
+from data_loader import DataLoader
+
+# Load all files with default extensions
+dl_default = DataLoader(path="path/to/directory", default_extensions=["csv"], generator=False, full_posix=False)
+dl_default_files = dl_default.files
+print(dl_default_files)
+# Output:
+# DataLoader((file1.csv, <DataFrame>),
+#             (file2.csv, <DataFrame>),
+#             ...
+#             (fileN.csv, <DataFrame>))
+```
+
+### Retrieve Data for a Specific File
+
+```python
+from data_loader import DataLoader
+
+# Retrieve data for a specific file
+dl_files = DataLoader(path="path/to/directory", generator=False, full_posix=False).files
+dl_specific_file_data = dl_files["file1.csv"]
+# Output:
+# <DataFrame>
+```
+
+### Load Files with Custom Loader Methods
+
+```python
+from data_loader import DataLoader
+import pandas as pd
+
+# Specify your own custom loader methods
+dl_custom = DataLoader(path="path/to/directory", ext_loaders={"csv": {pd.read_csv: {"nrows": 10}}}, generator=False, full_posix=False)
+dl_custom_files = dl_custom.files
+print(dl_custom_files)
+# Output:
+# DataLoader((file1.csv, <DataFrame>),
+#             (file2.csv, <DataFrame>),
+#             ...
+#             (fileN.csv, <DataFrame>))
+# Note: The 'nrows' will be dynamically passed to the 'pd.read_csv' method for each file.
+```
+
+### Specify a Custom Logger
+
+```python
+from data_loader import DataLoader
+import logging
+
+# Specify your own custom logger
+custom_logger = logging.getLogger("DataLoader")
+dl_with_logger = DataLoader(path="path/to/directory", log=custom_logger)
+dl_logger_files = dl_with_logger.files
+print(dl_logger_files)
+# Output:
+# <generator object DataLoader.files.<key-value> at 0x1163f4ba0>
+# Note: The logger will be used to log or stream messages.
+```
 ---
 
 ## `DataMetrics` Usage
@@ -287,45 +380,49 @@ CustomException("Error Message")  # Writes to the log file
 ```
 ---
 
-# Output Example
-```py
-DataLoader((all-duas.json, <Dict>),
-           (ara_eng.txt, <Str>),
-           (milestones.pdf, <ExtractPages>),
-           (islamic_facts.csv, <DataFrame>),
-           (SOURCES.md, <TextIOWrapper>),
-           (islam-laws.docx, <Open>),
-           (db_config.ini, <ConfigParser>),
-           (allahs_names.csv, <DataFrame>),
-           (The Road to Peace and Salvation.html, <Open>),
-           (arabic_numbers.csv, <DataFrame>),
-           (all-surah-meanings.json, <Dict>)
-)
+## `DataMetrics` Usage Examples
 
-dm = DataMetrics((path/to/directory1,    <Dict>),
-            (path/to/directory2, <Dict>)
-)
-dm[path/to/directory1] -> {**os_stats_results, 
-'st_fsize': Stats(symbolic='6.20 KB', calculated_size=6.19921875, bytes_size=6348), 'st_vsize': {'total': Stats(symbolic='465.63 GB (Gigabytes)', calculated_size=465.62699127197266, bytes_size=499963174912), 'used': Stats(symbolic='131.60 GB (Gigabytes)', calculated_size=131.59552001953125, bytes_size=141299613696), 'free': Stats(symbolic='334.03 GB (Gigabytes)', calculated_size=334.0314712524414, bytes_size=358663561216)}}
+```python
+from data_metrics import DataMetrics
 
-dm.export_stats() # Exported all statistics to a JSON file (all_metadata_stats.json))
-print(dm.total_size) # Calculate the total size of all paths
-print(dm.total_files) # Calculate the total number of files in all paths
+# Create a DataMetrics instance with paths and corresponding metadata
+dm = DataMetrics(("path/to/directory1", <Dict>),
+                 ("path/to/directory2", <Dict>))
 
+# Access metadata for a specific path
+metadata_directory1 = dm["path/to/directory1"]
+print(metadata_directory1)
+# Output:
+# {'os_stats_results': <os_stats_results>,
+#  'st_fsize': Stats(symbolic='6.20 KB', calculated_size=6.19921875, bytes_size=6348),
+#  'st_vsize': {'total': Stats(symbolic='465.63 GB (Gigabytes)', calculated_size=465.62699127197266, bytes_size=499963174912),
+#               'used': Stats(symbolic='131.60 GB (Gigabytes)', calculated_size=131.59552001953125, bytes_size=141299613696),
+#               'free': Stats(symbolic='334.03 GB (Gigabytes)', calculated_size=334.0314712524414, bytes_size=358663561216)}}
+
+# Export all statistics to a JSON file
+dm.export_stats(file_path="all_metadata_stats.json")
+
+# Calculate the total size of all paths
+total_size = dm.total_size
+print(total_size)
+# Output:
+# Stats(symbolic='471.76 GB (Gigabytes)', calculated_size=471.75720977783203, bytes_size=507012679260)
+
+# Calculate the total number of files in all paths
+total_files = dm.total_files
+print(total_files)
+# Output:
+# 215
 ```
-
 ---
+
 # Future Updates
-- [x] ~~Implement support for specifying what loader method to use for a specific file extension.~~
-  - [x] ~~Add support for loader method kwarg parameters.~~
-- [x] ~~Add support for customizing the `Extensions` class with new file extensions and its respective loader methods.~~
 - [ ] Include the ability to specify loader methods for individual files, providing greater flexibility.
 - [ ] Intend to add an option for special representation of loaded files, displaying all contents rather than just the data type.
 - [ ] Add more comprehensive tests covering all implemented features.
   - [ ] Include specific tests for the `ext_loaders` parameter.
 - [ ] Add loading method keyword argument support for the `load_file` class method.
   - [ ] Implement a more efficient method for specifying loader methods kwargs for specific files rather than applying them uniformly.
-- [x] Add support for custom loggers, allowing users to use their preferred logging configuration.
 
 ---
 # Feedback
