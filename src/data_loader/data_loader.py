@@ -81,6 +81,7 @@ from typing import Any, Generator, Iterable, Iterator, NamedTuple, TypeVar, Unio
 from json.decoder import JSONDecodeError
 from pandas.errors import DtypeWarning, EmptyDataError, ParserError
 
+sys.path.append((Path(__file__).parent).as_posix())
 from other_extensions import OTHER_EXTS
 
 
@@ -1511,7 +1512,7 @@ if __name__ == "__main__":
 
 # XXX Metadata Information
 METADATA = {
-    "version": (__version__ := "1.1.25"),
+    "version": (__version__ := "1.1.28"),
     "license": (__license__ := "Apache License, Version 2.0"),
     "url": (__url__ := "https://github.com/yousefabuz17/DataLoader"),
     "author": (__author__ := "Yousef Abuzahrieh <yousef.zahrieh17@gmail.com"),
