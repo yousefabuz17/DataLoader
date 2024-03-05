@@ -102,7 +102,6 @@ class GetLogger:
 
     #### Attributes:
         - `refresher` (callable): A method to refresh the log file.
-        - `set_verbose` (callable): A method to set the verbosity of the logger.
 
     #### Returns:
         - Logger: A configured logger instance.
@@ -114,11 +113,6 @@ class GetLogger:
 
         # Example 2: Create a logger with custom settings
         logger = GetLogger(name='custom_logger', level=logging.INFO, verbose=True).get_logger()
-
-        # Example 3: Initiate verbosity.
-        logger = GetLogger().get_logger()
-        logger.set_verbose(True)
-        CustomException("Error Message") # Prints to the console
 
         # Example 4: Verbosity is disabled
         logger = GetLogger().get_logger()
@@ -166,20 +160,10 @@ class GetLogger:
         self.stream_handler = logging.FileHandler(**self.handler_kwgs_)
         self.stream_handler.setFormatter(self.formatter)
         self.logger_.addHandler(self.stream_handler)
-        self.logger_.set_verbose = self.set_verbose
 
     def refresher(self, refresh: bool):
         if refresh:
             self.handler_kwgs_["mode"] = "w"
-
-    def set_verbose(self, verbose: bool = False):
-        """Set the verbosity of the logger."""
-        if verbose:
-            stream_handler = logging.StreamHandler()
-        else:
-            stream_handler = logging.FileHandler(**self.handler_kwgs_)
-        stream_handler.setFormatter(self.formatter)
-        self.logger_.handlers = [stream_handler]
 
     @property
     def logger(self) -> Logger:
@@ -1086,13 +1070,12 @@ class DataLoader(_BaseLoader):
         self._dir_files = None
 
     def _set_log(self):
+        global logger
         if self._log and isinstance(self._log, Logger):
-            global logger
             logger = self._log
-        if hasattr(logger, "set_verbose"):
-            logger.set_verbose(self._verbose)
         if hasattr(logger, "refresher"):
             logger.refresher(self._verbose)
+        logger.disabled = not self._verbose
 
     @property
     def all_exts(self):
@@ -1512,7 +1495,7 @@ if __name__ == "__main__":
 
 # XXX Metadata Information
 METADATA = {
-    "version": (__version__ := "1.1.28"),
+    "version": (__version__ := "1.1.29"),
     "license": (__license__ := "Apache License, Version 2.0"),
     "url": (__url__ := "https://github.com/yousefabuz17/DataLoader"),
     "author": (__author__ := "Yousef Abuzahrieh <yousef.zahrieh17@gmail.com"),
